@@ -23,3 +23,12 @@ CREATE TABLE IF NOT EXISTS `level_roles` (
   `role_id` varchar(20) NOT NULL,
   PRIMARY KEY (`server_id`, `level`)
 );
+
+CREATE TABLE IF NOT EXISTS `claude_conversations` (
+  `id` INTEGER PRIMARY KEY AUTOINCREMENT,
+  `channel_id` varchar(20) NOT NULL,
+  `user_id` varchar(20) NOT NULL,
+  `role` varchar(10) NOT NULL,
+  `content` TEXT NOT NULL,
+  `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP
+);

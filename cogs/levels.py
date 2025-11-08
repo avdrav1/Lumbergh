@@ -156,8 +156,27 @@ class Levels(commands.Cog, name="levels"):
         # Add leaderboard entries
         leaderboard_text = ""
         for idx, (user_id, xp, level, messages) in enumerate(leaderboard, start=offset + 1):
+            # Try to get member from cache first
             user = context.guild.get_member(user_id)
-            username = user.display_name if user else f"User {user_id}"
+
+            # If not in cache, try to fetch from API
+            if not user:
+                try:
+                    user = await context.guild.fetch_member(user_id)
+                except discord.NotFound:
+                    # Member left the server, try to get basic user info
+                    try:
+                        user = await self.bot.fetch_user(user_id)
+                    except:
+                        user = None
+                except:
+                    user = None
+
+            # Get the display name or username
+            if user:
+                username = user.display_name if hasattr(user, 'display_name') else user.name
+            else:
+                username = f"User {user_id}"
 
             # Add medal emojis for top 3
             if idx == 1:

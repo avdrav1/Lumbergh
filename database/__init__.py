@@ -312,3 +312,70 @@ class DatabaseManager:
         :return: The calculated level.
         """
         return int(0.1 * (xp**0.5))
+
+    # ===== CLAUDE CONVERSATION METHODS =====
+
+    async def add_claude_message(
+        self, channel_id: int, user_id: int, role: str, content: str
+    ) -> None:
+        """
+        Add a message to the Claude conversation history.
+        Conversation history is shared across all users in a channel.
+
+        :param channel_id: The ID of the channel.
+        :param user_id: The ID of the user who sent the message.
+        :param role: The role ('user' or 'assistant').
+        :param content: The message content.
+        """
+        await self.connection.execute(
+            "INSERT INTO claude_conversations (channel_id, user_id, role, content) VALUES (?, ?, ?, ?)",
+            (channel_id, user_id, role, content),
+        )
+        await self.connection.commit()
+
+    async def get_conversation_history(self, channel_id: int, limit: int = 20) -> list:
+        """
+        Get the shared conversation history for a channel.
+        Returns messages in chronological order (oldest first).
+
+        :param channel_id: The ID of the channel.
+        :param limit: Maximum number of messages to retrieve.
+        :return: List of tuples (role, content).
+        """
+        rows = await self.connection.execute(
+            "SELECT role, content FROM claude_conversations WHERE channel_id=? ORDER BY created_at DESC LIMIT ?",
+            (channel_id, limit),
+        )
+        async with rows as cursor:
+            result = await cursor.fetchall()
+            # Reverse to get chronological order (oldest first)
+            return list(reversed(result))
+
+    async def clear_conversation(self, channel_id: int) -> int:
+        """
+        Clear the shared conversation history for a channel.
+
+        :param channel_id: The ID of the channel.
+        :return: Number of messages deleted.
+        """
+        cursor = await self.connection.execute(
+            "DELETE FROM claude_conversations WHERE channel_id=?",
+            (channel_id,),
+        )
+        await self.connection.commit()
+        return cursor.rowcount
+
+    async def get_total_messages(self, channel_id: int) -> int:
+        """
+        Get the total number of messages in a channel's conversation.
+
+        :param channel_id: The ID of the channel.
+        :return: Total message count.
+        """
+        rows = await self.connection.execute(
+            "SELECT COUNT(*) FROM claude_conversations WHERE channel_id=?",
+            (channel_id,),
+        )
+        async with rows as cursor:
+            result = await cursor.fetchone()
+            return result[0] if result else 0

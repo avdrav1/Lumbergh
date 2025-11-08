@@ -57,6 +57,7 @@ intents.presences = True
 """
 
 intents = discord.Intents.default()
+intents.members = True  # Required for leaderboard to display usernames
 
 """
 Uncomment this if you want to use prefix (normal) commands.
@@ -273,12 +274,21 @@ class DiscordBot(commands.Bot):
                                     f"Failed to assign role {role.name} to {message.author.name} - Missing permissions"
                                 )
 
-                    try:
-                        await message.channel.send(embed=embed)
-                    except discord.Forbidden:
-                        # If bot can't send messages, just log it
+                    # Send level-up notification to #lumbergh channel only
+                    lumbergh_channel = discord.utils.get(
+                        message.guild.text_channels, name="lumbergh"
+                    )
+                    if lumbergh_channel:
+                        try:
+                            await lumbergh_channel.send(embed=embed)
+                        except discord.Forbidden:
+                            # If bot can't send messages, just log it
+                            self.logger.warning(
+                                f"Failed to send level-up message in #lumbergh - Missing permissions"
+                            )
+                    else:
                         self.logger.warning(
-                            f"Failed to send level-up message in {message.channel.name}"
+                            f"Could not find #lumbergh channel for level-up notification"
                         )
 
         await self.process_commands(message)
@@ -354,6 +364,11 @@ class DiscordBot(commands.Bot):
                 color=0xE02B2B,
             )
             await context.send(embed=embed)
+        elif isinstance(error, commands.CommandNotFound):
+            # Silently ignore CommandNotFound errors - these occur when users mention the bot
+            # with text that isn't a registered command (e.g., "@Lumbergh what's...").
+            # The Claude cog's on_message listener will handle these @mentions appropriately.
+            return
         else:
             raise error
 
