@@ -208,6 +208,79 @@ class DiscordBot(commands.Bot):
         """
         if message.author == self.user or message.author.bot:
             return
+
+        # XP tracking system (only in guilds, not DMs)
+        if message.guild is not None and self.database is not None:
+            from datetime import datetime, timedelta
+
+            # Get user's level data
+            data = await self.database.get_user_level_data(
+                message.author.id, message.guild.id
+            )
+
+            # Check cooldown (60 seconds between XP gains)
+            can_gain_xp = True
+            if data and data["last_xp_time"]:
+                try:
+                    last_xp_time = datetime.strptime(
+                        data["last_xp_time"], "%Y-%m-%d %H:%M:%S"
+                    )
+                    cooldown_end = last_xp_time + timedelta(seconds=60)
+                    if datetime.now() < cooldown_end:
+                        can_gain_xp = False
+                except ValueError:
+                    # If parsing fails, allow XP gain
+                    pass
+
+            # Award XP if cooldown has passed
+            if can_gain_xp:
+                xp_amount = random.randint(15, 25)
+                current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+                new_xp, new_level, old_level, leveled_up = await self.database.add_xp(
+                    message.author.id, message.guild.id, xp_amount, current_time
+                )
+
+                # Send level-up notification
+                if leveled_up:
+                    embed = discord.Embed(
+                        title="🎉 Level Up!",
+                        description=f"{message.author.mention} just advanced to **Level {new_level}**!",
+                        color=0x2ECC71,
+                    )
+                    embed.add_field(
+                        name="Total XP", value=f"{new_xp:,}", inline=True
+                    )
+
+                    # Check for role rewards
+                    role_id = await self.database.get_role_for_level(
+                        message.guild.id, new_level
+                    )
+                    if role_id:
+                        role = message.guild.get_role(role_id)
+                        if role:
+                            try:
+                                await message.author.add_roles(
+                                    role, reason=f"Reached Level {new_level}"
+                                )
+                                embed.add_field(
+                                    name="🎁 Role Reward",
+                                    value=f"You earned {role.mention}!",
+                                    inline=False,
+                                )
+                            except discord.Forbidden:
+                                self.logger.warning(
+                                    f"Failed to assign role {role.name} to {message.author.name} - Missing permissions"
+                                )
+
+                    try:
+                        await message.channel.send(embed=embed)
+                    except discord.Forbidden:
+                        # If bot can't send messages, just log it
+                        self.logger.warning(
+                            f"Failed to send level-up message in {message.channel.name}"
+                        )
+
         await self.process_commands(message)
 
     async def on_command_completion(self, context: Context) -> None:
