@@ -333,49 +333,76 @@ class DatabaseManager:
         )
         await self.connection.commit()
 
-    async def get_conversation_history(self, channel_id: int, limit: int = 20) -> list:
+    async def get_conversation_history(self, channel_id: int, limit: int = 20, user_id: int = None) -> list:
         """
-        Get the shared conversation history for a channel.
+        Get the conversation history for a channel.
         Returns messages in chronological order (oldest first).
 
         :param channel_id: The ID of the channel.
         :param limit: Maximum number of messages to retrieve.
+        :param user_id: Optional user ID for personal conversation history. If None, returns shared channel history.
         :return: List of tuples (role, content).
         """
-        rows = await self.connection.execute(
-            "SELECT role, content FROM claude_conversations WHERE channel_id=? ORDER BY created_at DESC LIMIT ?",
-            (channel_id, limit),
-        )
+        if user_id is not None:
+            # Personal conversation: filter by both channel_id and user_id
+            rows = await self.connection.execute(
+                "SELECT role, content FROM claude_conversations WHERE channel_id=? AND user_id=? ORDER BY id DESC LIMIT ?",
+                (channel_id, user_id, limit),
+            )
+        else:
+            # Shared conversation: filter by channel_id only
+            rows = await self.connection.execute(
+                "SELECT role, content FROM claude_conversations WHERE channel_id=? ORDER BY id DESC LIMIT ?",
+                (channel_id, limit),
+            )
         async with rows as cursor:
             result = await cursor.fetchall()
             # Reverse to get chronological order (oldest first)
             return list(reversed(result))
 
-    async def clear_conversation(self, channel_id: int) -> int:
+    async def clear_conversation(self, channel_id: int, user_id: int = None) -> int:
         """
-        Clear the shared conversation history for a channel.
+        Clear conversation history for a channel.
 
         :param channel_id: The ID of the channel.
+        :param user_id: Optional user ID for personal conversation history. If None, clears shared channel history.
         :return: Number of messages deleted.
         """
-        cursor = await self.connection.execute(
-            "DELETE FROM claude_conversations WHERE channel_id=?",
-            (channel_id,),
-        )
+        if user_id is not None:
+            # Personal conversation: delete by both channel_id and user_id
+            cursor = await self.connection.execute(
+                "DELETE FROM claude_conversations WHERE channel_id=? AND user_id=?",
+                (channel_id, user_id),
+            )
+        else:
+            # Shared conversation: delete by channel_id only
+            cursor = await self.connection.execute(
+                "DELETE FROM claude_conversations WHERE channel_id=?",
+                (channel_id,),
+            )
         await self.connection.commit()
         return cursor.rowcount
 
-    async def get_total_messages(self, channel_id: int) -> int:
+    async def get_total_messages(self, channel_id: int, user_id: int = None) -> int:
         """
-        Get the total number of messages in a channel's conversation.
+        Get the total number of messages in a conversation.
 
         :param channel_id: The ID of the channel.
+        :param user_id: Optional user ID for personal conversation. If None, returns shared channel count.
         :return: Total message count.
         """
-        rows = await self.connection.execute(
-            "SELECT COUNT(*) FROM claude_conversations WHERE channel_id=?",
-            (channel_id,),
-        )
+        if user_id is not None:
+            # Personal conversation: count by both channel_id and user_id
+            rows = await self.connection.execute(
+                "SELECT COUNT(*) FROM claude_conversations WHERE channel_id=? AND user_id=?",
+                (channel_id, user_id),
+            )
+        else:
+            # Shared conversation: count by channel_id only
+            rows = await self.connection.execute(
+                "SELECT COUNT(*) FROM claude_conversations WHERE channel_id=?",
+                (channel_id,),
+            )
         async with rows as cursor:
             result = await cursor.fetchone()
             return result[0] if result else 0

@@ -28,76 +28,46 @@ class Claude(commands.Cog, name="claude"):
             self.client = AsyncAnthropic(api_key=api_key)
             self.bot.logger.info("Claude AI integration initialized successfully.")
 
-    @commands.Cog.listener()
-    async def on_message(self, message: discord.Message) -> None:
-        """
-        Event listener that triggers when a message is sent.
-        Responds when the bot is mentioned.
-
-        :param message: The message that was sent.
-        """
-        # Ignore messages from the bot itself
-        if message.author.bot:
-            return
-
-        # Check if bot was mentioned
-        if self.bot.user not in message.mentions:
-            return
-
-        # Don't respond if it's a command
-        if message.content.startswith(self.bot.bot_prefix) or message.content.startswith("/"):
-            return
-
-        # Extract the question (remove the mention)
-        question = message.content
-        for mention in message.mentions:
-            question = question.replace(f"<@{mention.id}>", "").replace(f"<@!{mention.id}>", "")
-        question = question.strip()
-
-        if not question:
-            embed = discord.Embed(
-                description="You mentioned me, but didn't ask anything! Try asking me a question.",
-                color=0x3498db,
-            )
-            await message.reply(embed=embed, mention_author=False)
-            return
-
-        # Process the question
-        await self._process_question(message, question, message.author, message.channel)
-
     @commands.hybrid_command(
         name="ask",
         description="Ask Claude AI a question with conversation context.",
     )
-    @app_commands.describe(question="The question you want to ask Claude")
+    @app_commands.describe(
+        question="The question you want to ask Claude",
+        shared="Use shared channel conversation (default: yes)"
+    )
     @commands.cooldown(1, 5, commands.BucketType.user)
-    async def ask(self, context: Context, *, question: str) -> None:
+    async def ask(self, context: Context, question: str, shared: bool = True) -> None:
         """
         Ask Claude AI a question with conversation context.
 
         :param context: The hybrid command context.
         :param question: The question to ask Claude.
+        :param shared: Whether to use shared channel conversation (default: True).
         """
-        await self._process_question(context.message, question, context.author, context.channel)
+        await self._process_question(context, question, shared)
 
     async def _process_question(
-        self, message: discord.Message, question: str, author: discord.User, channel: discord.TextChannel
+        self, context: Context, question: str, shared: bool = True
     ) -> None:
         """
         Process a question to Claude with conversation context.
 
-        :param message: The Discord message object.
+        :param context: The command context.
         :param question: The question to ask.
-        :param author: The user asking the question.
-        :param channel: The channel where the question was asked.
+        :param shared: Whether to use shared channel conversation (default: True).
         """
+        # Defer the response immediately for slash commands to prevent timeout
+        if context.interaction:
+            await context.defer()
+
         if not self.client:
             embed = discord.Embed(
                 title="Error",
                 description="Claude AI is not configured. Please contact the bot owner.",
                 color=0xE02B2B,
             )
-            await message.reply(embed=embed, mention_author=False)
+            await context.send(embed=embed)
             return
 
         if len(question) > 2000:
@@ -106,24 +76,27 @@ class Claude(commands.Cog, name="claude"):
                 description="Your question is too long. Please keep it under 2000 characters.",
                 color=0xE02B2B,
             )
-            await message.reply(embed=embed, mention_author=False)
+            await context.send(embed=embed)
             return
 
         # Show typing indicator while processing
-        async with channel.typing():
+        async with context.channel.typing():
             try:
-                # Get shared conversation history for this channel
-                history = await self.bot.database.get_conversation_history(
-                    channel.id, limit=20
+                # Store the user's question FIRST to ensure conversation consistency
+                await self.bot.database.add_claude_message(
+                    context.channel.id, context.author.id, "user", question
                 )
 
-                # Build messages array for Claude
+                # Get conversation history for this channel (shared or personal based on mode)
+                user_id_filter = None if shared else context.author.id
+                history = await self.bot.database.get_conversation_history(
+                    context.channel.id, limit=20, user_id=user_id_filter
+                )
+
+                # Build messages array for Claude from the complete history
                 messages = []
                 for role, content in history:
                     messages.append({"role": role, "content": content})
-
-                # Add the current question
-                messages.append({"role": "user", "content": question})
 
                 # Call the Anthropic API with Claude 3.5 Haiku
                 api_response = await self.client.messages.create(
@@ -135,12 +108,9 @@ class Claude(commands.Cog, name="claude"):
                 # Extract the response text
                 response_text = api_response.content[0].text
 
-                # Store the question and response in the database (shared conversation)
+                # Store only the assistant's response in the database
                 await self.bot.database.add_claude_message(
-                    channel.id, author.id, "user", question
-                )
-                await self.bot.database.add_claude_message(
-                    channel.id, 0, "assistant", response_text
+                    context.channel.id, 0, "assistant", response_text
                 )
 
                 # If response is too long, split into multiple messages
@@ -166,13 +136,20 @@ class Claude(commands.Cog, name="claude"):
                         description=chunks[0],
                         color=0xBEBEFE,
                     )
-                    total_msgs = await self.bot.database.get_total_messages(channel.id)
-                    embed.set_footer(text=f"Channel conversation: {total_msgs // 2} exchanges")
-                    await message.reply(embed=embed, mention_author=False)
+                    # Add the question as the author field with user's avatar
+                    question_display = question[:250] + "..." if len(question) > 250 else question
+                    embed.set_author(
+                        name=question_display,
+                        icon_url=context.author.avatar.url if context.author.avatar else None
+                    )
+                    total_msgs = await self.bot.database.get_total_messages(context.channel.id, user_id=user_id_filter)
+                    conversation_type = "Shared" if shared else "Personal"
+                    embed.set_footer(text=f"{conversation_type} conversation: {total_msgs // 2} exchanges")
+                    await context.send(embed=embed)
 
                     # Send remaining chunks as plain text
                     for chunk in chunks[1:]:
-                        await channel.send(chunk)
+                        await context.channel.send(chunk)
                 else:
                     # Create and send the response embed
                     embed = discord.Embed(
@@ -180,12 +157,19 @@ class Claude(commands.Cog, name="claude"):
                         description=response_text,
                         color=0xBEBEFE,
                     )
-                    total_msgs = await self.bot.database.get_total_messages(channel.id)
-                    embed.set_footer(text=f"Channel conversation: {total_msgs // 2} exchanges")
-                    await message.reply(embed=embed, mention_author=False)
+                    # Add the question as the author field with user's avatar
+                    question_display = question[:250] + "..." if len(question) > 250 else question
+                    embed.set_author(
+                        name=question_display,
+                        icon_url=context.author.avatar.url if context.author.avatar else None
+                    )
+                    total_msgs = await self.bot.database.get_total_messages(context.channel.id, user_id=user_id_filter)
+                    conversation_type = "Shared" if shared else "Personal"
+                    embed.set_footer(text=f"{conversation_type} conversation: {total_msgs // 2} exchanges")
+                    await context.send(embed=embed)
 
                 self.bot.logger.info(
-                    f"{author} (ID: {author.id}) asked Claude in #{channel.name}: {question[:50]}..."
+                    f"{context.author} (ID: {context.author.id}) asked Claude in #{context.channel.name}: {question[:50]}..."
                 )
 
             except Exception as e:
@@ -195,63 +179,83 @@ class Claude(commands.Cog, name="claude"):
                     description="An error occurred while processing your request. Please try again later.",
                     color=0xE02B2B,
                 )
-                await message.reply(embed=embed, mention_author=False)
+                await context.send(embed=embed)
 
     @commands.hybrid_command(
         name="clear",
-        description="Clear the shared conversation history with Claude in this channel.",
+        description="Clear conversation history with Claude in this channel.",
     )
-    async def clear(self, context: Context) -> None:
+    @app_commands.describe(shared="Clear shared channel conversation (default: yes)")
+    async def clear(self, context: Context, shared: bool = True) -> None:
         """
-        Clear the shared conversation history with Claude in this channel.
+        Clear conversation history with Claude in this channel.
 
         :param context: The hybrid command context.
+        :param shared: Whether to clear shared channel conversation (default: True).
         """
-        deleted_count = await self.bot.database.clear_conversation(context.channel.id)
+        # Defer the response for slash commands
+        if context.interaction:
+            await context.defer()
 
+        user_id_filter = None if shared else context.author.id
+        deleted_count = await self.bot.database.clear_conversation(context.channel.id, user_id=user_id_filter)
+
+        conversation_type = "shared channel" if shared else "your personal"
         if deleted_count > 0:
             embed = discord.Embed(
                 title="Conversation Cleared",
-                description=f"Successfully cleared {deleted_count} messages from this channel's conversation history.",
+                description=f"Successfully cleared {deleted_count} messages from {conversation_type} conversation history.",
                 color=0x2ecc71,
             )
         else:
             embed = discord.Embed(
                 title="No History",
-                description="This channel doesn't have any conversation history with Claude yet.",
+                description=f"This channel doesn't have any {conversation_type} conversation history with Claude yet.",
                 color=0x3498db,
             )
 
         await context.send(embed=embed)
+        mode_str = "shared" if shared else "personal"
         self.bot.logger.info(
-            f"{context.author} cleared the Claude conversation history in #{context.channel.name}"
+            f"{context.author} cleared the {mode_str} Claude conversation history in #{context.channel.name}"
         )
 
     @commands.hybrid_command(
         name="context",
-        description="View information about this channel's conversation with Claude.",
+        description="View information about conversation with Claude.",
     )
-    async def context_info(self, context: Context) -> None:
+    @app_commands.describe(shared="View shared channel conversation (default: yes)")
+    async def context_info(self, context: Context, shared: bool = True) -> None:
         """
-        View information about this channel's conversation with Claude.
+        View information about conversation with Claude.
 
         :param context: The hybrid command context.
+        :param shared: Whether to view shared channel conversation (default: True).
         """
-        total_msgs = await self.bot.database.get_total_messages(context.channel.id)
+        # Defer the response for slash commands
+        if context.interaction:
+            await context.defer()
+
+        user_id_filter = None if shared else context.author.id
+        total_msgs = await self.bot.database.get_total_messages(context.channel.id, user_id=user_id_filter)
+
+        conversation_type = "shared channel" if shared else "your personal"
+        clear_command = "/clear" if shared else "/clear shared:false"
 
         if total_msgs == 0:
             embed = discord.Embed(
                 title="Conversation Info",
-                description="This channel hasn't started a conversation with Claude yet.",
+                description=f"This channel doesn't have any {conversation_type} conversation with Claude yet.",
                 color=0x3498db,
             )
         else:
             exchanges = total_msgs // 2
+            mode_description = "The conversation is shared by everyone in this channel." if shared else "This is your personal conversation - only you can see it."
             embed = discord.Embed(
                 title="Conversation Info",
-                description=f"This channel's conversation has **{total_msgs}** messages ({exchanges} exchanges).\n\n"
-                f"The conversation is shared by everyone in this channel.\n"
-                f"Use `/clear` to reset the conversation.",
+                description=f"This {conversation_type} conversation has **{total_msgs}** messages ({exchanges} exchanges).\n\n"
+                f"{mode_description}\n"
+                f"Use `{clear_command}` to reset the conversation.",
                 color=0xBEBEFE,
             )
 
