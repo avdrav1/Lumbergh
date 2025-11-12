@@ -21,6 +21,7 @@ from typing import Literal
 # Import helpers
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from helpers import thread_manager, scheduling
+from helpers.claude_cog import ClaudeAICog
 
 
 # Default news sources with RSS feeds
@@ -48,10 +49,9 @@ DEFAULT_SOURCES = {
 }
 
 
-class News(commands.Cog, name="news"):
+class News(ClaudeAICog, name="news"):
     def __init__(self, bot) -> None:
-        self.bot = bot
-        self.anthropic_client = AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+        super().__init__(bot, cog_name="News cog")
         self.daily_news_task.start()
 
     def cog_unload(self) -> None:
@@ -388,7 +388,7 @@ class News(commands.Cog, name="news"):
             )
 
             # Call Claude API with prompt caching
-            response = await self.anthropic_client.messages.create(
+            response = await self.client.messages.create(
                 model="claude-3-5-haiku-20241022",
                 max_tokens=2000,
                 system=[

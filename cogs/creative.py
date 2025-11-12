@@ -19,25 +19,15 @@ from discord import app_commands
 from discord.ext import commands, tasks
 from discord.ext.commands import Context
 
-# Import thread management utilities
+# Import helpers
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from helpers import thread_manager
+from helpers.claude_cog import ClaudeAICog
 
 
-class Creative(commands.Cog, name="creative"):
+class Creative(ClaudeAICog, name="creative"):
     def __init__(self, bot) -> None:
-        self.bot = bot
-
-        # Initialize Claude client
-        api_key = os.getenv("ANTHROPIC_API_KEY")
-        if not api_key:
-            self.bot.logger.warning(
-                "ANTHROPIC_API_KEY not found. Creative features will not work."
-            )
-            self.client = None
-        else:
-            self.client = AsyncAnthropic(api_key=api_key)
-            self.bot.logger.info("Creative cog initialized with Claude AI.")
+        super().__init__(bot, cog_name="Creative cog")
 
         # Start background tasks
         self.check_daily_prompts.start()

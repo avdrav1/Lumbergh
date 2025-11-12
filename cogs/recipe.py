@@ -7,6 +7,7 @@ Version: 6.3.0
 """
 
 import os
+import sys
 import json
 import random
 from datetime import datetime, time, timedelta
@@ -17,6 +18,10 @@ from anthropic import AsyncAnthropic
 from discord import app_commands
 from discord.ext import commands, tasks
 from discord.ext.commands import Context
+
+# Import helpers
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from helpers.claude_cog import ClaudeAICog
 
 
 class ExpandableRecipeView(discord.ui.View):
@@ -106,7 +111,7 @@ class ExpandableRecipeView(discord.ui.View):
             )
 
 
-class Recipe(commands.Cog, name="recipe"):
+class Recipe(ClaudeAICog, name="recipe"):
     # Class-level constants for command choices
     CUISINES = [
         "Italian", "Mexican", "Chinese", "Japanese", "Indian",
@@ -121,20 +126,7 @@ class Recipe(commands.Cog, name="recipe"):
     DIFFICULTY = ["Easy", "Medium", "Hard"]
 
     def __init__(self, bot) -> None:
-        self.bot = bot
-
-        # Initialize Claude client
-        api_key = os.getenv("ANTHROPIC_API_KEY")
-        if not api_key:
-            self.bot.logger.warning(
-                "ANTHROPIC_API_KEY not found. Recipe feature will not work."
-            )
-            self.client = None
-        else:
-            self.client = AsyncAnthropic(api_key=api_key)
-            self.bot.logger.info("Recipe cog initialized with Claude AI.")
-
-        # Start background task
+        super().__init__(bot, cog_name="Recipe cog")
         self.check_daily_recipes.start()
 
         # Fallback recipes

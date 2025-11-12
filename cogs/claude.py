@@ -7,6 +7,7 @@ Version: 6.3.0
 """
 
 import os
+import sys
 import time
 import asyncio
 
@@ -15,6 +16,10 @@ from anthropic import AsyncAnthropic
 from discord import app_commands
 from discord.ext import commands
 from discord.ext.commands import Context
+
+# Import helpers
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from helpers.claude_cog import ClaudeAICog
 
 
 class ExpandableView(discord.ui.View):
@@ -59,18 +64,9 @@ class ExpandableView(discord.ui.View):
         await interaction.response.edit_message(embed=embed, view=self)
 
 
-class Claude(commands.Cog, name="claude"):
+class Claude(ClaudeAICog, name="claude"):
     def __init__(self, bot) -> None:
-        self.bot = bot
-        api_key = os.getenv("ANTHROPIC_API_KEY")
-        if not api_key:
-            self.bot.logger.warning(
-                "ANTHROPIC_API_KEY not found in environment variables. Claude commands will not work."
-            )
-            self.client = None
-        else:
-            self.client = AsyncAnthropic(api_key=api_key)
-            self.bot.logger.info("Claude AI integration initialized successfully.")
+        super().__init__(bot, cog_name="Claude cog")
 
     @commands.hybrid_command(
         name="ask",

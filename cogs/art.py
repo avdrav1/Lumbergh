@@ -25,22 +25,12 @@ from discord.ext.commands import Context
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from helpers import thread_manager, scheduling
+from helpers.claude_cog import ClaudeAICog
 
 
-class Art(commands.Cog, name="art"):
+class Art(ClaudeAICog, name="art"):
     def __init__(self, bot) -> None:
-        self.bot = bot
-
-        # Initialize Claude client for AI analysis
-        api_key = os.getenv("ANTHROPIC_API_KEY")
-        if not api_key:
-            self.bot.logger.warning(
-                "ANTHROPIC_API_KEY not found. Art analysis features will be limited."
-            )
-            self.client = None
-        else:
-            self.client = AsyncAnthropic(api_key=api_key)
-            self.bot.logger.info("Art cog initialized with Claude AI.")
+        super().__init__(bot, cog_name="Art cog")
 
         # Start the background tasks
         self.daily_art_task.start()

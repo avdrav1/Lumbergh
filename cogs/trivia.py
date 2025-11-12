@@ -7,6 +7,7 @@ Version: 6.3.0
 """
 
 import os
+import sys
 import re
 import random
 from datetime import datetime, time, timedelta
@@ -17,6 +18,10 @@ from anthropic import AsyncAnthropic
 from discord import app_commands
 from discord.ext import commands, tasks
 from discord.ext.commands import Context
+
+# Import helpers
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from helpers.claude_cog import ClaudeAICog
 
 
 class TriviaView(discord.ui.View):
@@ -133,22 +138,9 @@ class TriviaView(discord.ui.View):
                 pass  # Message may have been deleted
 
 
-class Trivia(commands.Cog, name="trivia"):
+class Trivia(ClaudeAICog, name="trivia"):
     def __init__(self, bot) -> None:
-        self.bot = bot
-
-        # Initialize Claude client
-        api_key = os.getenv("ANTHROPIC_API_KEY")
-        if not api_key:
-            self.bot.logger.warning(
-                "ANTHROPIC_API_KEY not found. Trivia feature will not work."
-            )
-            self.client = None
-        else:
-            self.client = AsyncAnthropic(api_key=api_key)
-            self.bot.logger.info("Trivia cog initialized with Claude AI.")
-
-        # Start background task
+        super().__init__(bot, cog_name="Trivia cog")
         self.check_trivia_schedule.start()
 
         # Category definitions

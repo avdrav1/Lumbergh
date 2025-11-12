@@ -22,24 +22,14 @@ from discord.ext.commands import Context
 # Import helpers
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from helpers import scheduling
+from helpers.claude_cog import ClaudeAICog
 
 
-class Vibes(commands.Cog, name="vibes"):
+class Vibes(ClaudeAICog, name="vibes"):
     """Community vibes features: Memory Bank and Question of the Day."""
 
     def __init__(self, bot) -> None:
-        self.bot = bot
-
-        # Initialize Claude client for AI features
-        api_key = os.getenv("ANTHROPIC_API_KEY")
-        if not api_key:
-            self.bot.logger.warning(
-                "ANTHROPIC_API_KEY not found. AI features will be limited."
-            )
-            self.client = None
-        else:
-            self.client = AsyncAnthropic(api_key=api_key)
-            self.bot.logger.info("Vibes cog initialized with Claude AI.")
+        super().__init__(bot, cog_name="Vibes cog")
 
         # Start background tasks
         self.bot.logger.info("Starting QOTD background task...")
