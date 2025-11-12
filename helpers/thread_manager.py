@@ -143,3 +143,85 @@ async def get_inactive_bot_threads(
                 inactive_threads.append(thread)
 
     return inactive_threads
+
+
+async def create_bot_thread(
+    message: discord.Message,
+    thread_name: str,
+    initial_content: Optional[str] = None,
+    auto_archive_duration: int = 1440,
+    logger = None
+) -> Optional[discord.Thread]:
+    """
+    Create a thread from a message with proper permission checks and error handling.
+
+    This function centralizes thread creation logic used across multiple cogs,
+    ensuring consistent behavior including:
+    - Permission validation before creation
+    - Thread creation with configurable settings
+    - Optional initial content posting
+    - Automatic unarchiving (fixes Discord auto-archive issue)
+    - Comprehensive error handling and logging
+
+    Args:
+        message: The Discord message to create a thread from
+        thread_name: Name for the thread (max 100 characters)
+        initial_content: Optional content to post as first message in thread
+        auto_archive_duration: Minutes of inactivity before auto-archive (default: 1440 = 24 hours)
+        logger: Optional logger for diagnostic output
+
+    Returns:
+        The created Thread object if successful, None otherwise
+    """
+    channel = message.channel
+    guild = message.guild
+
+    # Check bot permissions first
+    bot_permissions = channel.permissions_for(guild.me)
+    if not bot_permissions.create_public_threads:
+        if logger:
+            logger.warning(
+                f"Missing 'Create Public Threads' permission in {channel.guild.name} "
+                f"(channel: {channel.name}). Cannot create thread."
+            )
+        return None
+
+    try:
+        # Create the thread
+        thread = await message.create_thread(
+            name=thread_name[:100],  # Thread names limited to 100 chars
+            auto_archive_duration=auto_archive_duration
+        )
+
+        # Post initial content if provided
+        if initial_content:
+            await thread.send(initial_content)
+
+        # Explicitly ensure thread is not archived
+        # (Fixes Discord issue where threads sometimes start archived)
+        if thread.archived:
+            await thread.edit(archived=False)
+            if logger:
+                logger.info(f"Unarchived thread '{thread_name}'")
+
+        # Log successful creation
+        if logger:
+            logger.info(
+                f"Created thread '{thread_name}' "
+                f"(ID: {thread.id}, archived: {thread.archived}, locked: {thread.locked})"
+            )
+
+        return thread
+
+    except discord.Forbidden:
+        if logger:
+            logger.warning(
+                f"Permission denied creating thread '{thread_name}'. "
+                "Bot needs 'Create Public Threads' permission."
+            )
+        return None
+
+    except Exception as e:
+        if logger:
+            logger.error(f"Failed to create thread '{thread_name}': {e}")
+        return None

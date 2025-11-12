@@ -14,8 +14,13 @@ import feedparser
 from datetime import datetime, timedelta
 import re
 import os
+import sys
 from anthropic import AsyncAnthropic
 from typing import Literal
+
+# Import thread management utilities
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from helpers import thread_manager
 
 
 # Default news sources with RSS feeds
@@ -582,41 +587,18 @@ class News(commands.Cog, name="news"):
                 await channel.send(embed=digest_embed)
 
             # Create thread for full articles
-            try:
-                # Check if bot has permission to create threads
-                bot_permissions = channel.permissions_for(channel.guild.me)
-                if not bot_permissions.create_public_threads:
-                    self.bot.logger.warning(
-                        f"Missing 'Create Public Threads' permission in server {server_id}, channel {channel_id}. "
-                        "Posting digest only."
-                    )
-                    return
+            thread_name = f"📰 Full Articles - {datetime.now().strftime('%B %d, %Y')}"
+            thread = await thread_manager.create_bot_thread(
+                message=header_embed_message,
+                thread_name=thread_name,
+                auto_archive_duration=1440,
+                logger=self.bot.logger
+            )
 
-                thread_name = f"📰 Full Articles - {datetime.now().strftime('%B %d, %Y')}"
-
-                # Create thread from the channel directly using the message
-                if isinstance(channel, discord.TextChannel):
-                    thread = await channel.create_thread(
-                        name=thread_name,
-                        message=header_embed_message,
-                        auto_archive_duration=1440  # 24 hours
-                    )
-                else:
-                    # Fallback to message.create_thread for other channel types
-                    thread = await header_embed_message.create_thread(
-                        name=thread_name,
-                        auto_archive_duration=1440  # 24 hours
-                    )
-            except discord.Forbidden:
+            if not thread:
                 self.bot.logger.warning(
-                    f"Permission denied creating thread in server {server_id}, channel {channel_id}. "
-                    "Bot needs 'Create Public Threads' permission."
+                    f"Could not create thread for server {server_id}. Posting digest only."
                 )
-                return
-            except Exception as thread_error:
-                self.bot.logger.error(f"Failed to create thread for server {server_id}: {thread_error}")
-                # Skip posting full articles if thread creation fails
-                self.bot.logger.info(f"Posted {len(all_articles)} news articles to server {server_id} (digest only)")
                 return
 
             # Post each individual article with AI summary to the thread
@@ -720,42 +702,20 @@ class News(commands.Cog, name="news"):
                 await ctx.send(embed=digest_embed)
 
             # Create thread for full articles
-            try:
-                # Check if bot has permission to create threads
-                bot_permissions = ctx.channel.permissions_for(ctx.guild.me)
-                if not bot_permissions.create_public_threads:
-                    error_msg = (
-                        "⚠️ **Missing Permission**: I need the **Create Public Threads** permission to post full articles.\n\n"
-                        f"Please give me this permission in {ctx.channel.mention}, then try again."
-                    )
-                    await ctx.send(error_msg)
-                    return
+            thread_name = f"📰 Full Articles - {datetime.now().strftime('%B %d, %Y')}"
+            thread = await thread_manager.create_bot_thread(
+                message=header_embed_message,
+                thread_name=thread_name,
+                auto_archive_duration=1440,
+                logger=self.bot.logger
+            )
 
-                thread_name = f"📰 Full Articles - {datetime.now().strftime('%B %d, %Y')}"
-
-                # Create thread from the channel directly using the message
-                if isinstance(ctx.channel, discord.TextChannel):
-                    thread = await ctx.channel.create_thread(
-                        name=thread_name,
-                        message=header_embed_message,
-                        auto_archive_duration=1440  # 24 hours
-                    )
-                else:
-                    # Fallback to message.create_thread for other channel types
-                    thread = await header_embed_message.create_thread(
-                        name=thread_name,
-                        auto_archive_duration=1440  # 24 hours
-                    )
-            except discord.Forbidden:
+            if not thread:
                 error_msg = (
                     "⚠️ **Permission Error**: I don't have permission to create threads in this channel.\n\n"
                     f"Please give me the **Create Public Threads** permission in {ctx.channel.mention}."
                 )
                 await ctx.send(error_msg)
-                return
-            except Exception as thread_error:
-                self.bot.logger.error(f"Failed to create thread: {thread_error}")
-                await ctx.send(f"⚠️ Could not create thread: {thread_error}\n\nPosting summaries only.")
                 return
 
             # Post each individual article with AI summary to the thread

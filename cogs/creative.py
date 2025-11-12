@@ -9,6 +9,7 @@ Version: 6.3.0
 import os
 import re
 import random
+import sys
 from datetime import datetime, time, timedelta
 from typing import Optional, Dict, List, Tuple
 
@@ -17,6 +18,10 @@ from anthropic import AsyncAnthropic
 from discord import app_commands
 from discord.ext import commands, tasks
 from discord.ext.commands import Context
+
+# Import thread management utilities
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from helpers import thread_manager
 
 
 class Creative(commands.Cog, name="creative"):
@@ -736,10 +741,16 @@ Write the next 100-200 words continuing the story naturally. Match the tone and 
 
             # Send message and create thread
             message = await context.send(embed=embed)
-            thread = await message.create_thread(
-                name=f"Story: {prompt[:50]}...",
-                auto_archive_duration=1440  # 24 hours
+            thread = await thread_manager.create_bot_thread(
+                message=message,
+                thread_name=f"Story: {prompt[:50]}...",
+                auto_archive_duration=1440,
+                logger=self.bot.logger
             )
+
+            if not thread:
+                await context.send("⚠️ Could not create thread. Please check bot permissions.")
+                return
 
             # Save to database
             await self.bot.database.connection.execute(
