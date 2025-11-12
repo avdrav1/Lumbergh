@@ -21,6 +21,11 @@ from discord import app_commands
 from discord.ext import commands, tasks
 from discord.ext.commands import Context
 
+# Import thread management utilities
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from helpers import thread_manager
+
 
 class Art(commands.Cog, name="art"):
     def __init__(self, bot) -> None:
@@ -37,12 +42,14 @@ class Art(commands.Cog, name="art"):
             self.client = AsyncAnthropic(api_key=api_key)
             self.bot.logger.info("Art cog initialized with Claude AI.")
 
-        # Start the background task
+        # Start the background tasks
         self.daily_art_task.start()
+        self.cleanup_threads_task.start()
 
     def cog_unload(self) -> None:
         """Clean up when cog is unloaded."""
         self.daily_art_task.cancel()
+        self.cleanup_threads_task.cancel()
 
     # Focus area keywords for filtering art
     FOCUS_AREAS = {
@@ -479,6 +486,111 @@ Focus on what makes this piece interesting or unique visually and historically."
     @daily_art_task.before_loop
     async def before_daily_art_task(self) -> None:
         """Wait for bot to be ready before starting task."""
+        await self.bot.wait_until_ready()
+
+    async def _get_servers_with_threads(self) -> List[tuple]:
+        """
+        Get all servers with thread-creating features enabled.
+
+        Returns list of (guild_id, channel_id) tuples from art, news, and creative configs.
+        """
+        channels = []
+
+        try:
+            # Get art channels - returns (server_id, channel_id, post_time, tz_offset, last_post_date)
+            art_servers = await self.bot.database.get_servers_needing_art()
+            if art_servers:
+                # Extract just server_id and channel_id
+                channels.extend([(server[0], server[1]) for server in art_servers])
+
+            # Get news channels - returns (server_id, channel_id, post_time, tz_offset, last_post_date)
+            news_servers = await self.bot.database.get_servers_needing_news()
+            if news_servers:
+                # Extract just server_id and channel_id
+                channels.extend([(server[0], server[1]) for server in news_servers])
+
+            # Note: Creative cog may not have a config table, but we'll handle
+            # creative threads by pattern matching in the cleanup task
+
+        except Exception as e:
+            self.bot.logger.error(f"Error querying thread-enabled servers: {e}")
+
+        # Deduplicate in case a channel has multiple features enabled
+        return list(set(channels))
+
+    @tasks.loop(hours=1)
+    async def cleanup_threads_task(self) -> None:
+        """
+        Periodically archive inactive threads created by art, news, and creative cogs.
+
+        Runs every hour to check for threads inactive for 24+ hours.
+        """
+        try:
+            self.bot.logger.info("Starting thread cleanup task...")
+
+            # Get all servers with thread-creating features enabled
+            servers = await self._get_servers_with_threads()
+
+            total_archived = 0
+
+            for guild_id, channel_id in servers:
+                try:
+                    guild = self.bot.get_guild(guild_id)
+                    if not guild:
+                        continue
+
+                    channel = guild.get_channel(channel_id)
+                    if not channel:
+                        continue
+
+                    # Check bot permissions
+                    perms = channel.permissions_for(guild.me)
+                    if not perms.manage_threads:
+                        self.bot.logger.warning(
+                            f"Missing manage_threads permission in {channel.name} "
+                            f"({guild.name}). Skipping thread cleanup."
+                        )
+                        continue
+
+                    # Get inactive bot threads in this channel
+                    inactive_threads = await thread_manager.get_inactive_bot_threads(
+                        channel,
+                        self.bot.user.id,
+                        hours=24
+                    )
+
+                    # Archive each inactive thread
+                    for thread in inactive_threads:
+                        success = await thread_manager.archive_thread(thread)
+                        if success:
+                            total_archived += 1
+                            self.bot.logger.info(
+                                f"Archived thread '{thread.name}' in {guild.name}"
+                            )
+                        else:
+                            self.bot.logger.warning(
+                                f"Failed to archive thread '{thread.name}' in {guild.name}"
+                            )
+
+                except Exception as e:
+                    self.bot.logger.error(
+                        f"Error cleaning threads for guild {guild_id}, channel {channel_id}: {e}"
+                    )
+                    continue
+
+            if total_archived > 0:
+                self.bot.logger.info(
+                    f"Thread cleanup complete: archived {total_archived} inactive threads"
+                )
+            else:
+                self.bot.logger.debug("Thread cleanup complete: no threads to archive")
+
+        except Exception as e:
+            self.bot.logger.error(f"Error in cleanup_threads_task: {e}")
+
+    @cleanup_threads_task.before_loop
+    async def before_cleanup_threads_task(self) -> None:
+        """Wait for bot to be ready before starting cleanup task."""
         await self.bot.wait_until_ready()
 
     async def analyze_image_with_vision(self, image_url: str, analysis_type: str = "general") -> str:
