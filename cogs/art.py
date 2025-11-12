@@ -399,12 +399,22 @@ Focus on what makes this piece interesting or unique visually and historically."
                     try:
                         thread = await message.create_thread(
                             name=f"Analysis: {artwork['title'][:80]}",  # Thread names limited to 100 chars
-                            auto_archive_duration=1440  # Archive after 24 hours
+                            auto_archive_duration=1440  # Archive after 24 hours of inactivity
                         )
 
                         # Post the analysis in the thread
                         await thread.send(story)
-                        self.bot.logger.info(f"Created analysis thread for {artwork['title']}")
+
+                        # Explicitly ensure thread is not archived
+                        if thread.archived:
+                            await thread.edit(archived=False)
+                            self.bot.logger.info(f"Unarchived thread for {artwork['title']}")
+
+                        # Log thread state for debugging
+                        self.bot.logger.info(
+                            f"Created analysis thread for {artwork['title']} "
+                            f"(ID: {thread.id}, archived: {thread.archived}, locked: {thread.locked})"
+                        )
                     except discord.Forbidden:
                         self.bot.logger.warning(
                             f"Permission denied creating thread for {artwork['title']}. "
