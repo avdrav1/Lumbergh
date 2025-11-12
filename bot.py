@@ -200,6 +200,9 @@ class DiscordBot(commands.Bot):
                 f"{os.path.realpath(os.path.dirname(__file__))}/database/database.db"
             )
         )
+        # Configure SQLite for better concurrency
+        await self.database.connection.execute("PRAGMA journal_mode=WAL")
+        await self.database.connection.execute("PRAGMA busy_timeout=30000")
 
     async def on_message(self, message: discord.Message) -> None:
         """
