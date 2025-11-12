@@ -21,10 +21,10 @@ from discord import app_commands
 from discord.ext import commands, tasks
 from discord.ext.commands import Context
 
-# Import thread management utilities
+# Import helpers
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from helpers import thread_manager
+from helpers import thread_manager, scheduling
 
 
 class Art(commands.Cog, name="art"):
@@ -60,29 +60,6 @@ class Art(commands.Cog, name="art"):
         "sculpture": "sculpture, sculptural, three-dimensional",
         "painting": "painting, oil, watercolor, acrylic"
     }
-
-    def parse_time_string(self, time_str: str) -> Optional[time]:
-        """Parse time string in HH:MM format (24-hour)."""
-        time_str = time_str.strip()
-        pattern = r'^([0-1]?[0-9]|2[0-3]):([0-5][0-9])$'
-        match = re.match(pattern, time_str)
-        if match:
-            hour = int(match.group(1))
-            minute = int(match.group(2))
-            return time(hour, minute)
-        return None
-
-    def get_current_date_for_server(self, timezone_offset: int) -> str:
-        """Get current date string for a server's timezone."""
-        utc_now = datetime.utcnow()
-        server_time = utc_now + timedelta(hours=timezone_offset)
-        return server_time.strftime("%Y-%m-%d")
-
-    def get_current_time_for_server(self, timezone_offset: int) -> time:
-        """Get current time for a server's timezone."""
-        utc_now = datetime.utcnow()
-        server_time = utc_now + timedelta(hours=timezone_offset)
-        return server_time.time()
 
     async def fetch_met_artwork(self) -> Optional[Dict]:
         """
@@ -425,24 +402,16 @@ Focus on what makes this piece interesting or unique visually and historically."
                 server_id, channel_id, post_time_str, tz_offset, last_post_date = server_data
 
                 # Parse the post time
-                target_time = self.parse_time_string(post_time_str)
+                target_time = scheduling.parse_time_string(post_time_str)
                 if not target_time:
                     continue
 
-                # Get current date and time for this server's timezone
-                current_date = self.get_current_date_for_server(tz_offset)
-                current_time = self.get_current_time_for_server(tz_offset)
-
                 # Check if we've already posted today
-                if last_post_date == current_date:
+                if not scheduling.should_post_today(last_post_date, tz_offset):
                     continue
 
                 # Check if it's time to post (within 15-minute window)
-                target_datetime = datetime.combine(datetime.today(), target_time)
-                current_datetime = datetime.combine(datetime.today(), current_time)
-                time_diff = abs((current_datetime - target_datetime).total_seconds() / 60)
-
-                if time_diff <= 15:
+                if scheduling.should_post_now(target_time, tz_offset, window_minutes=15):
                     # Time to post! Try different museums
                     artwork = None
                     for fetch_func in [self.fetch_met_artwork, self.fetch_art_institute_artwork]:
@@ -453,6 +422,7 @@ Focus on what makes this piece interesting or unique visually and historically."
                     if artwork:
                         await self.post_artwork_to_channel(int(server_id), int(channel_id), artwork)
                         # Update last post date
+                        current_date = scheduling.get_server_date(tz_offset)
                         await self.bot.database.update_art_last_post_date(
                             int(server_id), current_date
                         )
@@ -918,7 +888,7 @@ Be thorough and insightful. Around 300-400 words."""
         :param timezone_offset: Hours offset from UTC.
         """
         # Validate time format
-        parsed_time = self.parse_time_string(post_time)
+        parsed_time = scheduling.parse_time_string(post_time)
         if not parsed_time:
             embed = discord.Embed(
                 description="❌ Invalid time format! Use HH:MM (24-hour format), e.g., 09:00 or 14:30",

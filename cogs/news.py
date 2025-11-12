@@ -18,9 +18,9 @@ import sys
 from anthropic import AsyncAnthropic
 from typing import Literal
 
-# Import thread management utilities
+# Import helpers
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from helpers import thread_manager
+from helpers import thread_manager, scheduling
 
 
 # Default news sources with RSS feeds
@@ -66,55 +66,35 @@ class News(commands.Cog, name="news"):
             servers = await self.bot.database.get_servers_needing_news()
 
             for server_data in servers:
-                server_id, channel_id, post_time, timezone_offset, last_post_date = (
-                    server_data
-                )
+                server_id, channel_id, post_time_str, timezone_offset, last_post_date = server_data
 
-                # Get current UTC time and adjust for timezone
-                now_utc = datetime.utcnow()
-                server_time = now_utc + timedelta(hours=timezone_offset)
-
-                # Parse the configured post time (HH:MM format)
-                try:
-                    post_hour, post_minute = map(int, post_time.split(":"))
-                except ValueError:
+                # Parse the post time
+                target_time = scheduling.parse_time_string(post_time_str)
+                if not target_time:
                     self.bot.logger.error(
-                        f"Invalid post_time format for server {server_id}: {post_time}"
+                        f"Invalid post_time format for server {server_id}: {post_time_str}"
                     )
                     continue
 
-                # Calculate time difference in minutes
-                current_minutes = server_time.hour * 60 + server_time.minute
-                target_minutes = post_hour * 60 + post_minute
-                time_diff = abs(current_minutes - target_minutes)
+                # Check if already posted today
+                if not scheduling.should_post_today(last_post_date, timezone_offset):
+                    self.bot.logger.debug(
+                        f"News already posted today for server {server_id} at {post_time_str}"
+                    )
+                    continue
 
-                # Log time check for debugging
-                self.bot.logger.debug(
-                    f"News check for server {server_id}: "
-                    f"current={server_time.strftime('%H:%M')} (UTC{timezone_offset:+d}), "
-                    f"target={post_time}, diff={time_diff}min, "
-                    f"window={'✓ IN' if time_diff <= 60 else '✗ OUT'}"
-                )
-
-                # Check if we're within the posting window (within 60 minutes)
-                if time_diff <= 60:
-                    # Check if we already posted today
-                    today_str = server_time.strftime("%Y-%m-%d")
-                    if last_post_date == today_str:
-                        self.bot.logger.debug(
-                            f"News already posted today for server {server_id} at {post_time}"
-                        )
-                        continue  # Already posted today
-
+                # Check if within posting window (60-minute window for news)
+                if scheduling.should_post_now(target_time, timezone_offset, window_minutes=60):
                     # Post news update
                     self.bot.logger.info(
-                        f"Posting news to server {server_id} at {post_time} (scheduled time reached)"
+                        f"Posting news to server {server_id} at {post_time_str} (scheduled time reached)"
                     )
                     await self.post_news_to_server(server_id, channel_id)
 
-                    # Update last post date for this specific time slot
+                    # Update last post date
+                    today_str = scheduling.get_server_date(timezone_offset)
                     await self.bot.database.update_last_news_post(
-                        server_id, post_time, today_str
+                        server_id, post_time_str, today_str
                     )
 
         except Exception as e:
