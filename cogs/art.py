@@ -388,17 +388,30 @@ Focus on what makes this piece interesting or unique visually and historically."
 
             # Create thread with analysis if vision succeeded
             if vision_success:
-                try:
-                    thread = await message.create_thread(
-                        name=f"Analysis: {artwork['title'][:80]}",  # Thread names limited to 100 chars
-                        auto_archive_duration=1440  # Archive after 24 hours
+                # Check bot permissions first
+                bot_permissions = channel.permissions_for(channel.guild.me)
+                if not bot_permissions.create_public_threads:
+                    self.bot.logger.warning(
+                        f"Missing 'Create Public Threads' permission in {channel.guild.name} "
+                        f"(channel: {channel.name}). Artwork posted without analysis thread."
                     )
+                else:
+                    try:
+                        thread = await message.create_thread(
+                            name=f"Analysis: {artwork['title'][:80]}",  # Thread names limited to 100 chars
+                            auto_archive_duration=1440  # Archive after 24 hours
+                        )
 
-                    # Post the analysis in the thread
-                    await thread.send(story)
-                    self.bot.logger.info(f"Created analysis thread for {artwork['title']}")
-                except Exception as e:
-                    self.bot.logger.error(f"Failed to create thread for {artwork['title']}: {e}")
+                        # Post the analysis in the thread
+                        await thread.send(story)
+                        self.bot.logger.info(f"Created analysis thread for {artwork['title']}")
+                    except discord.Forbidden:
+                        self.bot.logger.warning(
+                            f"Permission denied creating thread for {artwork['title']}. "
+                            "Bot needs 'Create Public Threads' permission."
+                        )
+                    except Exception as e:
+                        self.bot.logger.error(f"Failed to create thread for {artwork['title']}: {e}")
             else:
                 self.bot.logger.info(f"Skipping thread creation (vision analysis unavailable) for {artwork['title']}")
 
