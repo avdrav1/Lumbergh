@@ -379,7 +379,7 @@ Focus on what makes this piece interesting or unique visually and historically."
 
             # Footer - different message depending on whether we have analysis
             if vision_success:
-                embed.set_footer(text="💬 Check the thread below for AI-powered analysis! • Use /art-analyze to compare artworks")
+                embed.set_footer(text="🧵 Click this message to view AI analysis thread • Use /art-analyze to compare artworks")
             else:
                 embed.set_footer(text="💬 React and share your thoughts! • Use /art-analyze to learn more about any artwork")
 
