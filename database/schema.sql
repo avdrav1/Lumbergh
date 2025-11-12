@@ -283,7 +283,7 @@ CREATE TABLE IF NOT EXISTS `art_analysis_cache` (
   `artist` TEXT,
   `museum` TEXT,
   `vision_story` TEXT NOT NULL,
-  `analysis_model` varchar(50) DEFAULT 'claude-3-5-sonnet-20240620',
+  `analysis_model` varchar(50) DEFAULT 'claude-3-sonnet-20240229',
   `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `last_used_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP
 );

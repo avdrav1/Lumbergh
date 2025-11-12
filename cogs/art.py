@@ -197,7 +197,7 @@ class Art(commands.Cog, name="art"):
             self.bot.logger.error(f"Error fetching Art Institute artwork: {e}")
             return None
 
-    async def generate_art_story(self, artwork: Dict) -> str:
+    async def generate_art_story(self, artwork: Dict) -> tuple[str, bool]:
         """
         Generate an engaging story about the artwork using Claude vision analysis.
 
@@ -205,17 +205,18 @@ class Art(commands.Cog, name="art"):
         Falls back to text-only if vision fails.
 
         :param artwork: Dictionary containing artwork information.
-        :return: Generated story text.
+        :return: Tuple of (story text, vision_success flag). Only successful vision
+                 analyses are cached, so cache hits always indicate vision success.
         """
         artwork_url = artwork.get('object_url', '')
 
-        # Check cache first
+        # Check cache first - cache only contains successful vision analyses
         if artwork_url:
             cached = await self.bot.database.get_cached_art_analysis(artwork_url)
             if cached:
                 self.bot.logger.info(f"Cache hit for artwork: {artwork['title']}")
                 await self.bot.database.update_art_analysis_last_used(artwork_url)
-                return cached['vision_story']
+                return (cached['vision_story'], True)
 
         # Attempt vision analysis
         self.bot.logger.info(f"Generating vision analysis for: {artwork['title']}")
@@ -264,7 +265,7 @@ Focus on what makes this piece interesting or unique visually and historically."
 
                             # Call Claude vision API
                             message = await self.client.messages.create(
-                                model="claude-3-5-sonnet-20240620",
+                                model="claude-3-sonnet-20240229",
                                 max_tokens=600,
                                 messages=[{
                                     "role": "user",
@@ -302,12 +303,12 @@ Focus on what makes this piece interesting or unique visually and historically."
                                 except Exception as e:
                                     self.bot.logger.error(f"Failed to save analysis to cache: {e}")
 
-                            return vision_story
+                            return (vision_story, True)
 
             except Exception as e:
                 self.bot.logger.warning(f"Vision analysis failed for {artwork['title']}: {e}")
 
-        # Fallback to text-only generation
+        # Fallback to text-only generation (not cached - will retry vision on next attempt)
         self.bot.logger.info(f"Using text-only fallback for: {artwork['title']}")
 
         fallback_story = f"📚 **About this artwork:**\n\n"
@@ -319,21 +320,7 @@ Focus on what makes this piece interesting or unique visually and historically."
 
         fallback_story += f"\n\nThis piece represents {artwork['medium'].lower()} artistry from the {artwork['date']} period."
 
-        # Cache text-only fallback
-        if artwork_url and self.client:
-            try:
-                await self.bot.database.save_art_analysis(
-                    artwork_url,
-                    image_url or '',
-                    artwork['title'],
-                    artwork['artist'],
-                    artwork['museum'],
-                    fallback_story
-                )
-            except Exception as e:
-                self.bot.logger.error(f"Failed to save fallback to cache: {e}")
-
-        return fallback_story
+        return (fallback_story, False)
 
     async def post_artwork_to_channel(self, server_id: int, channel_id: int, artwork: Dict) -> bool:
         """Post an artwork with story to a channel."""
@@ -365,13 +352,13 @@ Focus on what makes this piece interesting or unique visually and historically."
                     )
                     return False
 
-            # Generate story
-            story = await self.generate_art_story(artwork)
+            # Generate story with vision analysis
+            story, vision_success = await self.generate_art_story(artwork)
 
-            # Create embed
+            # Create embed with artwork info (no story in main embed)
             embed = discord.Embed(
                 title=f"🎨 {artwork['title']}",
-                description=story,
+                description=f"*{artwork['artist']}, {artwork['date']}*",
                 color=0x9B59B6,  # Purple for art
                 url=artwork.get('object_url', '')
             )
@@ -390,10 +377,31 @@ Focus on what makes this piece interesting or unique visually and historically."
             if artwork.get('image_url'):
                 embed.set_image(url=artwork['image_url'])
 
-            # Footer
-            embed.set_footer(text="💬 React and share your thoughts! • Use /art-analyze to learn more about any artwork")
+            # Footer - different message depending on whether we have analysis
+            if vision_success:
+                embed.set_footer(text="💬 Check the thread below for AI-powered analysis! • Use /art-analyze to compare artworks")
+            else:
+                embed.set_footer(text="💬 React and share your thoughts! • Use /art-analyze to learn more about any artwork")
 
-            await channel.send(embed=embed)
+            # Send the artwork
+            message = await channel.send(embed=embed)
+
+            # Create thread with analysis if vision succeeded
+            if vision_success:
+                try:
+                    thread = await message.create_thread(
+                        name=f"Analysis: {artwork['title'][:80]}",  # Thread names limited to 100 chars
+                        auto_archive_duration=1440  # Archive after 24 hours
+                    )
+
+                    # Post the analysis in the thread
+                    await thread.send(story)
+                    self.bot.logger.info(f"Created analysis thread for {artwork['title']}")
+                except Exception as e:
+                    self.bot.logger.error(f"Failed to create thread for {artwork['title']}: {e}")
+            else:
+                self.bot.logger.info(f"Skipping thread creation (vision analysis unavailable) for {artwork['title']}")
+
             return True
 
         except Exception as e:
@@ -510,7 +518,7 @@ Be insightful and educational. Around 300-400 words."""
 
             # Call Claude vision API
             message = await self.client.messages.create(
-                model="claude-3-5-sonnet-20240620",  # Use Sonnet for better vision analysis
+                model="claude-3-sonnet-20240229",  # Use Sonnet for better vision analysis
                 max_tokens=800,
                 messages=[{
                     "role": "user",
@@ -705,7 +713,7 @@ Be thorough and insightful. Around 300-400 words."""
 
             # Call Claude with both images
             message = await self.client.messages.create(
-                model="claude-3-5-sonnet-20240620",
+                model="claude-3-sonnet-20240229",
                 max_tokens=1000,
                 messages=[{
                     "role": "user",
