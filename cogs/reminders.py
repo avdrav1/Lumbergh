@@ -189,10 +189,12 @@ class Reminders(commands.Cog, name="reminders"):
                 pass
 
             # Try next month
+            # Fix: Replace day to 1 first to avoid "day is out of range for month" error
+            # when current day is 31 and next month has fewer days
             if now.month == 12:
-                next_month = now.replace(year=now.year + 1, month=1)
+                next_month = now.replace(year=now.year + 1, month=1, day=1)
             else:
-                next_month = now.replace(month=now.month + 1)
+                next_month = now.replace(day=1, month=now.month + 1)
 
             try:
                 return datetime.combine(next_month.date().replace(day=target_day), target_time)
