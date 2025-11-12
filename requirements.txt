@@ -1,5 +1,7 @@
 aiohttp
 aiosqlite
 anthropic
+beautifulsoup4
 discord.py==2.5.2
+feedparser
 python-dotenv

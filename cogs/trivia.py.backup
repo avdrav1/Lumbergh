@@ -1,0 +1,922 @@
+"""
+Copyright © Krypton 2019-Present - https://github.com/kkrypt0nn (https://krypton.ninja)
+Description:
+🐍 A simple template to start to code your own and personalized Discord bot in Python
+
+Version: 6.3.0
+"""
+
+import os
+import re
+import random
+from datetime import datetime, time, timedelta
+from typing import Optional, Tuple, Dict, List
+
+import discord
+from anthropic import AsyncAnthropic
+from discord import app_commands
+from discord.ext import commands, tasks
+from discord.ext.commands import Context
+
+
+class TriviaView(discord.ui.View):
+    """Interactive button view for trivia questions."""
+
+    def __init__(self, correct_answer: str, cog, server_id: int, category: str, difficulty: str, question: str, explanation: str):
+        super().__init__(timeout=30)
+        self.correct_answer = correct_answer
+        self.cog = cog
+        self.server_id = server_id
+        self.category = category
+        self.difficulty = difficulty
+        self.question = question
+        self.explanation = explanation
+        self.answered_users = {}  # user_id: (answer, timestamp)
+        self.message = None
+
+    async def handle_answer(self, interaction: discord.Interaction, answer: str):
+        """Handle a user's answer."""
+        user_id = interaction.user.id
+
+        # Check if user already answered
+        if user_id in self.answered_users:
+            await interaction.response.send_message(
+                "You've already answered this question!",
+                ephemeral=True
+            )
+            return
+
+        # Record answer
+        self.answered_users[user_id] = (answer, datetime.utcnow())
+
+        # Check if correct
+        is_correct = (answer == self.correct_answer)
+
+        # Update user stats
+        await self.cog.update_user_stats(
+            self.server_id,
+            user_id,
+            is_correct,
+            self.category,
+            self.difficulty,
+            self.question,
+            answer
+        )
+
+        # Get user's current streak and points
+        stats = await self.cog.get_user_stats(self.server_id, user_id)
+
+        if is_correct:
+            points_earned = stats.get('points_last_earned', 0)
+            current_streak = stats.get('current_streak', 0)
+
+            response = f"✅ **Correct!** +{points_earned} points"
+            if current_streak > 1:
+                response += f" | 🔥 {current_streak} streak!"
+        else:
+            response = f"❌ Incorrect. The correct answer was **{self.correct_answer}**."
+
+        await interaction.response.send_message(response, ephemeral=True)
+
+    @discord.ui.button(label="A", style=discord.ButtonStyle.primary, custom_id="answer_a")
+    async def button_a(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_answer(interaction, "A")
+
+    @discord.ui.button(label="B", style=discord.ButtonStyle.primary, custom_id="answer_b")
+    async def button_b(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_answer(interaction, "B")
+
+    @discord.ui.button(label="C", style=discord.ButtonStyle.primary, custom_id="answer_c")
+    async def button_c(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_answer(interaction, "C")
+
+    @discord.ui.button(label="D", style=discord.ButtonStyle.primary, custom_id="answer_d")
+    async def button_d(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_answer(interaction, "D")
+
+    async def on_timeout(self):
+        """Called when the view times out."""
+        # Disable all buttons
+        for item in self.children:
+            item.disabled = True
+
+        # Update the message
+        if self.message:
+            try:
+                # Create result embed
+                embed = self.message.embeds[0]
+                embed.color = 0x95A5A6  # Gray for timeout
+                embed.set_footer(text=f"⏱️ Time's up! The correct answer was {self.correct_answer}")
+
+                # List users who answered correctly
+                correct_users = [
+                    f"<@{uid}>" for uid, (ans, _) in self.answered_users.items()
+                    if ans == self.correct_answer
+                ]
+
+                if correct_users:
+                    embed.add_field(
+                        name="✅ Correct Answers",
+                        value=", ".join(correct_users),
+                        inline=False
+                    )
+
+                if self.explanation:
+                    embed.add_field(
+                        name="💡 Explanation",
+                        value=self.explanation,
+                        inline=False
+                    )
+
+                await self.message.edit(embed=embed, view=self)
+            except Exception as e:
+                pass  # Message may have been deleted
+
+
+class Trivia(commands.Cog, name="trivia"):
+    def __init__(self, bot) -> None:
+        self.bot = bot
+
+        # Initialize Claude client
+        api_key = os.getenv("ANTHROPIC_API_KEY")
+        if not api_key:
+            self.bot.logger.warning(
+                "ANTHROPIC_API_KEY not found. Trivia feature will not work."
+            )
+            self.client = None
+        else:
+            self.client = AsyncAnthropic(api_key=api_key)
+            self.bot.logger.info("Trivia cog initialized with Claude AI.")
+
+        # Start background task
+        self.check_trivia_schedule.start()
+
+        # Category definitions
+        self.CATEGORIES = {
+            "general": "general knowledge covering various topics",
+            "science": "science, physics, chemistry, biology, and astronomy",
+            "history": "historical events, figures, and periods",
+            "geography": "geography, countries, capitals, and landmarks",
+            "entertainment": "movies, TV shows, music, and pop culture",
+            "sports": "sports, athletes, and sporting events",
+            "technology": "technology, computers, and innovations",
+            "random": "any topic"
+        }
+
+        # Category emojis
+        self.CATEGORY_EMOJIS = {
+            "general": "🧠",
+            "science": "🔬",
+            "history": "📜",
+            "geography": "🌍",
+            "entertainment": "🎬",
+            "sports": "⚽",
+            "technology": "💻",
+            "random": "🎲"
+        }
+
+        # Fallback questions
+        self.FALLBACK_QUESTIONS = [
+            {
+                "question": "What is the capital of France?",
+                "options": ["London", "Paris", "Berlin", "Madrid"],
+                "correct": "B",
+                "category": "geography",
+                "difficulty": "easy",
+                "explanation": "Paris is the capital and largest city of France."
+            },
+            {
+                "question": "Who painted the Mona Lisa?",
+                "options": ["Vincent van Gogh", "Leonardo da Vinci", "Pablo Picasso", "Michelangelo"],
+                "correct": "B",
+                "category": "entertainment",
+                "difficulty": "easy",
+                "explanation": "Leonardo da Vinci painted the Mona Lisa in the early 16th century."
+            },
+            {
+                "question": "What is the largest planet in our solar system?",
+                "options": ["Mars", "Saturn", "Jupiter", "Neptune"],
+                "correct": "C",
+                "category": "science",
+                "difficulty": "easy",
+                "explanation": "Jupiter is the largest planet in our solar system."
+            }
+        ]
+
+    def cog_unload(self) -> None:
+        """Clean up when cog is unloaded."""
+        self.check_trivia_schedule.cancel()
+
+    async def generate_question(self, category: str = "general", difficulty: str = "medium") -> Optional[Dict]:
+        """
+        Generate a trivia question using Claude AI.
+
+        :param category: The category for the question.
+        :param difficulty: The difficulty level (easy, medium, hard).
+        :return: Dictionary with question data or None if failed.
+        """
+        if not self.client:
+            return random.choice(self.FALLBACK_QUESTIONS)
+
+        category_description = self.CATEGORIES.get(category, self.CATEGORIES["general"])
+
+        prompt = f"""Generate a {difficulty} difficulty trivia question about {category_description}.
+
+Format your response EXACTLY like this:
+QUESTION: [the question text, clear and unambiguous, under 200 characters]
+A: [first option, under 100 characters]
+B: [second option, under 100 characters]
+C: [third option, under 100 characters]
+D: [fourth option, under 100 characters]
+CORRECT: [A, B, C, or D]
+EXPLANATION: [one sentence explaining why the answer is correct]
+
+Rules:
+- All options must be plausible but only one correct
+- Options should be similar length
+- Question should be clear and specific
+- Difficulty: easy = common knowledge, medium = educated guess possible, hard = specialized knowledge
+- No questions about current events after 2024"""
+
+        try:
+            message = await self.client.messages.create(
+                model="claude-3-5-haiku-20241022",
+                max_tokens=300,
+                messages=[{"role": "user", "content": prompt}]
+            )
+
+            response = message.content[0].text.strip()
+
+            # Parse the response
+            question_text = ""
+            options = {}
+            correct_answer = ""
+            explanation = ""
+
+            for line in response.split('\n'):
+                line = line.strip()
+                if line.startswith('QUESTION:'):
+                    question_text = line.replace('QUESTION:', '').strip()
+                elif line.startswith('A:'):
+                    options['A'] = line.replace('A:', '').strip()
+                elif line.startswith('B:'):
+                    options['B'] = line.replace('B:', '').strip()
+                elif line.startswith('C:'):
+                    options['C'] = line.replace('C:', '').strip()
+                elif line.startswith('D:'):
+                    options['D'] = line.replace('D:', '').strip()
+                elif line.startswith('CORRECT:'):
+                    correct_answer = line.replace('CORRECT:', '').strip().upper()
+                elif line.startswith('EXPLANATION:'):
+                    explanation = line.replace('EXPLANATION:', '').strip()
+
+            # Validate we got all parts
+            if not question_text or len(options) != 4 or not correct_answer or correct_answer not in ['A', 'B', 'C', 'D']:
+                raise ValueError("Failed to parse AI response")
+
+            return {
+                "question": question_text,
+                "options": options,
+                "correct": correct_answer,
+                "category": category,
+                "difficulty": difficulty,
+                "explanation": explanation
+            }
+
+        except Exception as e:
+            self.bot.logger.error(f"Error generating trivia question: {e}")
+            fallback = random.choice(self.FALLBACK_QUESTIONS)
+            fallback_formatted = {
+                "question": fallback["question"],
+                "options": {chr(65+i): opt for i, opt in enumerate(fallback["options"])},
+                "correct": fallback["correct"],
+                "category": fallback["category"],
+                "difficulty": fallback["difficulty"],
+                "explanation": fallback["explanation"]
+            }
+            return fallback_formatted
+
+    async def create_question_embed(self, question_data: Dict) -> discord.Embed:
+        """Create an embed for a trivia question."""
+        category = question_data["category"]
+        difficulty = question_data["difficulty"]
+        emoji = self.CATEGORY_EMOJIS.get(category, "❓")
+
+        # Color based on difficulty
+        colors = {
+            "easy": 0x2ECC71,    # Green
+            "medium": 0x3498DB,  # Blue
+            "hard": 0xE74C3C     # Red
+        }
+        color = colors.get(difficulty, 0x3498DB)
+
+        embed = discord.Embed(
+            title=f"{emoji} Trivia - {category.title()} ({difficulty.title()})",
+            description=question_data["question"],
+            color=color
+        )
+
+        # Add options
+        for letter, option in question_data["options"].items():
+            embed.add_field(
+                name=f"{letter}",
+                value=option,
+                inline=False
+            )
+
+        embed.set_footer(text="⏱️ You have 30 seconds to answer")
+
+        return embed
+
+    async def update_user_stats(self, server_id: int, user_id: int, is_correct: bool,
+                                category: str, difficulty: str, question: str, user_answer: str):
+        """Update user statistics after answering a question."""
+        try:
+            # Get current stats
+            async with self.bot.database.connection.execute(
+                "SELECT total_correct, total_answered, current_streak, best_streak, total_points FROM trivia_scores WHERE server_id = ? AND user_id = ?",
+                (server_id, user_id)
+            ) as cursor:
+                result = await cursor.fetchone()
+
+            if result:
+                total_correct, total_answered, current_streak, best_streak, total_points = result
+            else:
+                total_correct = total_answered = current_streak = best_streak = total_points = 0
+
+            # Calculate points
+            points_earned = 0
+            if is_correct:
+                # Base points
+                base_points = {"easy": 10, "medium": 20, "hard": 30}
+                points_earned = base_points.get(difficulty, 20)
+
+                # Streak bonus (up to +50)
+                current_streak += 1
+                streak_bonus = min((current_streak - 1) * 5, 50)
+                points_earned += streak_bonus
+
+                total_correct += 1
+                total_points += points_earned
+                best_streak = max(best_streak, current_streak)
+            else:
+                current_streak = 0
+
+            total_answered += 1
+
+            # Update or insert stats
+            await self.bot.database.connection.execute(
+                """INSERT INTO trivia_scores (server_id, user_id, total_correct, total_answered, current_streak, best_streak, total_points, last_played)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(server_id, user_id) DO UPDATE SET
+                   total_correct = excluded.total_correct,
+                   total_answered = excluded.total_answered,
+                   current_streak = excluded.current_streak,
+                   best_streak = excluded.best_streak,
+                   total_points = excluded.total_points,
+                   last_played = excluded.last_played""",
+                (server_id, user_id, total_correct, total_answered, current_streak, best_streak, total_points, datetime.utcnow())
+            )
+
+            # Record in history
+            await self.bot.database.connection.execute(
+                """INSERT INTO trivia_history (server_id, user_id, question, correct_answer, user_answer, correct, category, difficulty, points_earned)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (server_id, user_id, question, "Unknown", user_answer, is_correct, category, difficulty, points_earned)
+            )
+
+            await self.bot.database.connection.commit()
+
+            # Store points earned for feedback
+            if not hasattr(self, '_temp_points'):
+                self._temp_points = {}
+            self._temp_points[user_id] = points_earned
+
+        except Exception as e:
+            self.bot.logger.error(f"Error updating trivia stats: {e}")
+
+    async def get_user_stats(self, server_id: int, user_id: int) -> Dict:
+        """Get user statistics."""
+        try:
+            async with self.bot.database.connection.execute(
+                "SELECT total_correct, total_answered, current_streak, best_streak, total_points FROM trivia_scores WHERE server_id = ? AND user_id = ?",
+                (server_id, user_id)
+            ) as cursor:
+                result = await cursor.fetchone()
+
+            if result:
+                points_last = getattr(self, '_temp_points', {}).get(user_id, 0)
+                return {
+                    'total_correct': result[0],
+                    'total_answered': result[1],
+                    'current_streak': result[2],
+                    'best_streak': result[3],
+                    'total_points': result[4],
+                    'points_last_earned': points_last
+                }
+
+            return {
+                'total_correct': 0,
+                'total_answered': 0,
+                'current_streak': 0,
+                'best_streak': 0,
+                'total_points': 0,
+                'points_last_earned': 0
+            }
+        except Exception as e:
+            self.bot.logger.error(f"Error getting trivia stats: {e}")
+            return {}
+
+    @commands.hybrid_command(
+        name="trivia",
+        description="Start a trivia question",
+    )
+    @app_commands.describe(
+        category="The category for the question",
+        difficulty="The difficulty level"
+    )
+    @commands.cooldown(1, 3, commands.BucketType.user)
+    async def trivia(
+        self,
+        context: Context,
+        category: Optional[str] = "random",
+        difficulty: Optional[str] = "medium"
+    ) -> None:
+        """
+        Start a single trivia question.
+
+        :param context: The command context.
+        :param category: The category (general, science, history, geography, entertainment, sports, technology, random).
+        :param difficulty: The difficulty (easy, medium, hard).
+        """
+        # Validate inputs
+        if category not in self.CATEGORIES:
+            category = "random"
+        if difficulty not in ["easy", "medium", "hard"]:
+            difficulty = "medium"
+
+        # Generate question
+        await context.defer()
+        question_data = await self.generate_question(category, difficulty)
+
+        if not question_data:
+            embed = discord.Embed(
+                description="❌ Failed to generate trivia question. Please try again.",
+                color=0xE02B2B
+            )
+            await context.send(embed=embed)
+            return
+
+        # Create embed
+        embed = await self.create_question_embed(question_data)
+
+        # Create view with buttons
+        view = TriviaView(
+            question_data["correct"],
+            self,
+            context.guild.id,
+            question_data["category"],
+            question_data["difficulty"],
+            question_data["question"],
+            question_data["explanation"]
+        )
+
+        # Send message
+        message = await context.send(embed=embed, view=view)
+        view.message = message
+
+    @commands.hybrid_command(
+        name="trivia-categories",
+        description="List all available trivia categories",
+    )
+    async def trivia_categories(self, context: Context) -> None:
+        """
+        List all available trivia categories.
+
+        :param context: The command context.
+        """
+        embed = discord.Embed(
+            title="📚 Trivia Categories",
+            description="Available categories for trivia questions:",
+            color=0x3498DB
+        )
+
+        for cat, desc in self.CATEGORIES.items():
+            emoji = self.CATEGORY_EMOJIS.get(cat, "❓")
+            embed.add_field(
+                name=f"{emoji} {cat.title()}",
+                value=desc.capitalize(),
+                inline=False
+            )
+
+        embed.set_footer(text="Use /trivia [category] to play!")
+
+        await context.send(embed=embed)
+
+    @commands.hybrid_command(
+        name="trivia-scores",
+        description="View the server trivia leaderboard",
+    )
+    async def trivia_scores(self, context: Context) -> None:
+        """
+        Display the server leaderboard.
+
+        :param context: The command context.
+        """
+        try:
+            async with self.bot.database.connection.execute(
+                """SELECT user_id, total_points, total_correct, total_answered, best_streak
+                   FROM trivia_scores
+                   WHERE server_id = ?
+                   ORDER BY total_points DESC, total_correct DESC, best_streak DESC
+                   LIMIT 10""",
+                (context.guild.id,)
+            ) as cursor:
+                results = await cursor.fetchall()
+
+            if not results:
+                embed = discord.Embed(
+                    description="No trivia scores yet! Use `/trivia` to get started.",
+                    color=0x3498DB
+                )
+                await context.send(embed=embed)
+                return
+
+            embed = discord.Embed(
+                title="🏆 Trivia Leaderboard",
+                description=f"Top players in {context.guild.name}",
+                color=0xFFD700  # Gold
+            )
+
+            medals = ["🥇", "🥈", "🥉"]
+            leaderboard_text = []
+
+            for idx, (user_id, points, correct, answered, best_streak) in enumerate(results, 1):
+                medal = medals[idx-1] if idx <= 3 else f"`{idx}.`"
+                accuracy = (correct / answered * 100) if answered > 0 else 0
+                user_mention = f"<@{user_id}>"
+                leaderboard_text.append(
+                    f"{medal} {user_mention}\n"
+                    f"    💎 {points:,} pts | ✅ {accuracy:.1f}% | 🔥 {best_streak} streak"
+                )
+
+            embed.description += "\n\n" + "\n".join(leaderboard_text)
+            embed.set_footer(text="Keep playing to climb the ranks!")
+
+            await context.send(embed=embed)
+
+        except Exception as e:
+            self.bot.logger.error(f"Error fetching trivia scores: {e}")
+            embed = discord.Embed(
+                description="❌ Failed to fetch leaderboard. Please try again.",
+                color=0xE02B2B
+            )
+            await context.send(embed=embed)
+
+    @commands.hybrid_command(
+        name="trivia-stats",
+        description="View trivia statistics for yourself or another user",
+    )
+    @app_commands.describe(user="The user to check stats for (optional)")
+    async def trivia_stats(self, context: Context, user: Optional[discord.Member] = None) -> None:
+        """
+        Show personal trivia statistics.
+
+        :param context: The command context.
+        :param user: The user to check (optional, defaults to command user).
+        """
+        target_user = user or context.author
+
+        try:
+            stats = await self.get_user_stats(context.guild.id, target_user.id)
+
+            if stats.get('total_answered', 0) == 0:
+                embed = discord.Embed(
+                    description=f"{target_user.mention} hasn't played trivia yet!",
+                    color=0x3498DB
+                )
+                await context.send(embed=embed)
+                return
+
+            accuracy = (stats['total_correct'] / stats['total_answered'] * 100) if stats['total_answered'] > 0 else 0
+
+            embed = discord.Embed(
+                title=f"📊 Trivia Stats for {target_user.display_name}",
+                color=0x9B59B6
+            )
+
+            embed.add_field(
+                name="📈 Overall Performance",
+                value=(
+                    f"**Total Points:** {stats['total_points']:,}\n"
+                    f"**Questions Answered:** {stats['total_answered']}\n"
+                    f"**Correct Answers:** {stats['total_correct']}\n"
+                    f"**Accuracy:** {accuracy:.1f}%"
+                ),
+                inline=False
+            )
+
+            embed.add_field(
+                name="🔥 Streaks",
+                value=(
+                    f"**Current Streak:** {stats['current_streak']}\n"
+                    f"**Best Streak:** {stats['best_streak']}"
+                ),
+                inline=False
+            )
+
+            # Get favorite category
+            try:
+                async with self.bot.database.connection.execute(
+                    """SELECT category, COUNT(*) as count
+                       FROM trivia_history
+                       WHERE server_id = ? AND user_id = ?
+                       GROUP BY category
+                       ORDER BY count DESC
+                       LIMIT 1""",
+                    (context.guild.id, target_user.id)
+                ) as cursor:
+                    fav_result = await cursor.fetchone()
+
+                if fav_result:
+                    fav_category = fav_result[0]
+                    emoji = self.CATEGORY_EMOJIS.get(fav_category, "❓")
+                    embed.add_field(
+                        name="⭐ Favorite Category",
+                        value=f"{emoji} {fav_category.title()}",
+                        inline=False
+                    )
+            except Exception:
+                pass
+
+            embed.set_thumbnail(url=target_user.display_avatar.url)
+            embed.set_footer(text="Keep playing to improve your stats!")
+
+            await context.send(embed=embed)
+
+        except Exception as e:
+            self.bot.logger.error(f"Error fetching trivia stats: {e}")
+            embed = discord.Embed(
+                description="❌ Failed to fetch statistics. Please try again.",
+                color=0xE02B2B
+            )
+            await context.send(embed=embed)
+
+    @commands.hybrid_command(
+        name="trivia-schedule",
+        description="Schedule daily trivia games (Admin only)",
+    )
+    @app_commands.describe(
+        channel="The channel to post trivia in",
+        time="Time to post (24-hour format, e.g., 14:00)",
+        timezone="Your UTC timezone offset (e.g., -5 for EST, 1 for CET)"
+    )
+    @commands.has_permissions(administrator=True)
+    async def trivia_schedule(
+        self,
+        context: Context,
+        channel: discord.TextChannel,
+        time: str,
+        timezone: int
+    ) -> None:
+        """
+        Schedule daily trivia games.
+
+        :param context: The command context.
+        :param channel: The channel to post in.
+        :param time: The time in HH:MM format.
+        :param timezone: UTC offset (-12 to +14).
+        """
+        # Validate time format
+        time_pattern = r'^([0-1]?[0-9]|2[0-3]):([0-5][0-9])$'
+        if not re.match(time_pattern, time):
+            embed = discord.Embed(
+                description="❌ Invalid time format. Use HH:MM (24-hour), e.g., 14:00",
+                color=0xE02B2B
+            )
+            await context.send(embed=embed)
+            return
+
+        # Validate timezone
+        if timezone < -12 or timezone > 14:
+            embed = discord.Embed(
+                description="❌ Invalid timezone offset. Must be between -12 and +14.",
+                color=0xE02B2B
+            )
+            await context.send(embed=embed)
+            return
+
+        try:
+            # Insert or update configuration
+            await self.bot.database.connection.execute(
+                """INSERT INTO trivia_config (server_id, channel_id, post_time, timezone_offset, enabled)
+                   VALUES (?, ?, ?, ?, 1)
+                   ON CONFLICT(server_id) DO UPDATE SET
+                   channel_id = excluded.channel_id,
+                   post_time = excluded.post_time,
+                   timezone_offset = excluded.timezone_offset,
+                   enabled = excluded.enabled""",
+                (context.guild.id, channel.id, time, timezone)
+            )
+            await self.bot.database.connection.commit()
+
+            embed = discord.Embed(
+                title="✅ Trivia Scheduled!",
+                description=(
+                    f"Daily trivia will be posted in {channel.mention}\n"
+                    f"**Time:** {time} (UTC{timezone:+d})\n"
+                    f"**Status:** Enabled"
+                ),
+                color=0x2ECC71
+            )
+            embed.set_footer(text="Use /trivia-toggle to disable or /trivia-config to view settings")
+
+            await context.send(embed=embed)
+            self.bot.logger.info(f"Trivia scheduled for guild {context.guild.id}")
+
+        except Exception as e:
+            self.bot.logger.error(f"Error scheduling trivia: {e}")
+            embed = discord.Embed(
+                description="❌ Failed to schedule trivia. Please try again.",
+                color=0xE02B2B
+            )
+            await context.send(embed=embed)
+
+    @commands.hybrid_command(
+        name="trivia-toggle",
+        description="Enable or disable scheduled trivia (Admin only)",
+    )
+    @app_commands.describe(enabled="Enable or disable scheduled trivia")
+    @commands.has_permissions(administrator=True)
+    async def trivia_toggle(self, context: Context, enabled: bool) -> None:
+        """
+        Toggle scheduled trivia on/off.
+
+        :param context: The command context.
+        :param enabled: Whether to enable or disable.
+        """
+        try:
+            # Check if config exists
+            async with self.bot.database.connection.execute(
+                "SELECT channel_id FROM trivia_config WHERE server_id = ?",
+                (context.guild.id,)
+            ) as cursor:
+                result = await cursor.fetchone()
+
+            if not result:
+                embed = discord.Embed(
+                    description="❌ Trivia is not configured yet. Use `/trivia-schedule` first.",
+                    color=0xE02B2B
+                )
+                await context.send(embed=embed)
+                return
+
+            # Update enabled status
+            await self.bot.database.connection.execute(
+                "UPDATE trivia_config SET enabled = ? WHERE server_id = ?",
+                (enabled, context.guild.id)
+            )
+            await self.bot.database.connection.commit()
+
+            status = "enabled" if enabled else "disabled"
+            embed = discord.Embed(
+                description=f"✅ Scheduled trivia has been **{status}**.",
+                color=0x2ECC71 if enabled else 0x95A5A6
+            )
+            await context.send(embed=embed)
+
+        except Exception as e:
+            self.bot.logger.error(f"Error toggling trivia: {e}")
+            embed = discord.Embed(
+                description="❌ Failed to toggle trivia. Please try again.",
+                color=0xE02B2B
+            )
+            await context.send(embed=embed)
+
+    @commands.hybrid_command(
+        name="trivia-config",
+        description="View current trivia configuration (Admin only)",
+    )
+    @commands.has_permissions(administrator=True)
+    async def trivia_config(self, context: Context) -> None:
+        """
+        View current trivia configuration.
+
+        :param context: The command context.
+        """
+        try:
+            async with self.bot.database.connection.execute(
+                "SELECT channel_id, post_time, timezone_offset, enabled, questions_per_game, difficulty FROM trivia_config WHERE server_id = ?",
+                (context.guild.id,)
+            ) as cursor:
+                result = await cursor.fetchone()
+
+            if not result:
+                embed = discord.Embed(
+                    title="📋 Trivia Configuration",
+                    description="Trivia is not configured yet.\n\nUse `/trivia-schedule` to set up daily trivia games!",
+                    color=0x3498DB
+                )
+                await context.send(embed=embed)
+                return
+
+            channel_id, post_time, tz_offset, enabled, questions, difficulty = result
+            channel = context.guild.get_channel(int(channel_id))
+            channel_mention = channel.mention if channel else f"<#{channel_id}> (deleted)"
+            status = "✅ Enabled" if enabled else "❌ Disabled"
+
+            embed = discord.Embed(
+                title="📋 Trivia Configuration",
+                color=0x3498DB
+            )
+
+            embed.add_field(
+                name="⚙️ Settings",
+                value=(
+                    f"**Channel:** {channel_mention}\n"
+                    f"**Time:** {post_time} (UTC{tz_offset:+d})\n"
+                    f"**Status:** {status}\n"
+                    f"**Questions per Game:** {questions}\n"
+                    f"**Difficulty:** {difficulty.title()}"
+                ),
+                inline=False
+            )
+
+            embed.set_footer(text="Use /trivia-schedule to modify settings")
+
+            await context.send(embed=embed)
+
+        except Exception as e:
+            self.bot.logger.error(f"Error fetching trivia config: {e}")
+            embed = discord.Embed(
+                description="❌ Failed to fetch configuration. Please try again.",
+                color=0xE02B2B
+            )
+            await context.send(embed=embed)
+
+    @tasks.loop(minutes=15)
+    async def check_trivia_schedule(self):
+        """Background task to check if trivia should be posted."""
+        try:
+            # Get all enabled servers
+            async with self.bot.database.connection.execute(
+                "SELECT server_id, channel_id, post_time, timezone_offset, last_post_date, questions_per_game, difficulty FROM trivia_config WHERE enabled = 1"
+            ) as cursor:
+                configs = await cursor.fetchall()
+
+            for server_id, channel_id, post_time, tz_offset, last_post_date, questions, difficulty in configs:
+                # Check if it's time to post
+                utc_now = datetime.utcnow()
+                server_time = utc_now + timedelta(hours=tz_offset)
+                server_date = server_time.strftime("%Y-%m-%d")
+
+                # Parse post time
+                hour, minute = map(int, post_time.split(':'))
+
+                # Check if within posting window (60 minutes) and not posted today
+                time_diff = abs((server_time.hour * 60 + server_time.minute) - (hour * 60 + minute))
+
+                if time_diff <= 60 and last_post_date != server_date:
+                    # Time to post!
+                    guild = self.bot.get_guild(int(server_id))
+                    if guild:
+                        channel = guild.get_channel(int(channel_id))
+                        if channel:
+                            await self.post_scheduled_trivia(guild, channel, questions or 5, difficulty or "medium")
+
+                            # Update last post date
+                            await self.bot.database.connection.execute(
+                                "UPDATE trivia_config SET last_post_date = ? WHERE server_id = ?",
+                                (server_date, server_id)
+                            )
+                            await self.bot.database.connection.commit()
+
+                            self.bot.logger.info(f"Posted scheduled trivia to guild {server_id}")
+
+        except Exception as e:
+            self.bot.logger.error(f"Error in trivia schedule task: {e}")
+
+    @check_trivia_schedule.before_loop
+    async def before_check_trivia_schedule(self):
+        """Wait until the bot is ready before starting the task."""
+        await self.bot.wait_until_ready()
+
+    async def post_scheduled_trivia(self, guild: discord.Guild, channel: discord.TextChannel,
+                                    questions: int, difficulty: str):
+        """Post a scheduled trivia game."""
+        try:
+            embed = discord.Embed(
+                title="🎉 Daily Trivia Time!",
+                description=f"It's time for today's trivia challenge!\n\nUse `/trivia` to play, or check out `/trivia-scores` to see the leaderboard!",
+                color=0x3498DB
+            )
+            embed.set_footer(text=f"Scheduled daily trivia | {questions} questions")
+
+            await channel.send(embed=embed)
+
+        except Exception as e:
+            self.bot.logger.error(f"Error posting scheduled trivia: {e}")
+
+
+async def setup(bot) -> None:
+    await bot.add_cog(Trivia(bot))

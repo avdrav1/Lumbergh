@@ -1,0 +1,614 @@
+"""
+Copyright © Krypton 2019-Present - https://github.com/kkrypt0nn (https://krypton.ninja)
+Description:
+🐍 A simple template to start to code your own and personalized Discord bot in Python
+
+Version: 6.3.0
+"""
+
+import os
+import re
+from datetime import datetime, time, timedelta
+from typing import Optional
+
+import discord
+from anthropic import AsyncAnthropic
+from discord import app_commands
+from discord.ext import commands, tasks
+from discord.ext.commands import Context
+
+
+class Affirmations(commands.Cog, name="affirmations"):
+    def __init__(self, bot) -> None:
+        self.bot = bot
+
+        # Initialize Claude client
+        api_key = os.getenv("ANTHROPIC_API_KEY")
+        if not api_key:
+            self.bot.logger.warning(
+                "ANTHROPIC_API_KEY not found. Affirmations feature will not work."
+            )
+            self.client = None
+        else:
+            self.client = AsyncAnthropic(api_key=api_key)
+            self.bot.logger.info("Affirmations cog initialized with Claude AI.")
+
+        # Start the background task
+        self.daily_affirmation_task.start()
+
+    def cog_unload(self) -> None:
+        """Clean up when cog is unloaded."""
+        self.daily_affirmation_task.cancel()
+
+    # Theme definitions
+    THEMES = {
+        "motivation": "motivational and energizing, focused on taking action and achieving goals",
+        "gratitude": "centered on gratitude, appreciation, and recognizing life's blessings",
+        "confidence": "building self-confidence, self-worth, and inner strength",
+        "mindfulness": "promoting mindfulness, presence, and inner peace",
+        "success": "focused on success, abundance, and personal growth",
+        "random": "any positive and uplifting theme"
+    }
+
+    # Fallback quotes for each theme
+    FALLBACK_QUOTES = {
+        "motivation": ("The only way to do great work is to love what you do.", "Steve Jobs"),
+        "gratitude": ("Gratitude turns what we have into enough.", "Aesop"),
+        "confidence": ("Believe you can and you're halfway there.", "Theodore Roosevelt"),
+        "mindfulness": ("The present moment is the only time over which we have dominion.", "Thích Nhất Hạnh"),
+        "success": ("Success is not final, failure is not fatal: it is the courage to continue that counts.", "Winston Churchill"),
+        "random": ("The best way to predict the future is to create it.", "Peter Drucker")
+    }
+
+    def parse_time_string(self, time_str: str) -> Optional[time]:
+        """Parse time string in HH:MM format (24-hour)."""
+        time_str = time_str.strip()
+        pattern = r'^([0-1]?[0-9]|2[0-3]):([0-5][0-9])$'
+        match = re.match(pattern, time_str)
+        if match:
+            hour = int(match.group(1))
+            minute = int(match.group(2))
+            return time(hour, minute)
+        return None
+
+    async def generate_affirmation(self, theme: str = "motivation") -> tuple:
+        """
+        Generate an affirmation and related quote using Claude AI.
+
+        :param theme: The theme for the affirmation.
+        :return: Tuple of (affirmation_text, quote_text, quote_author).
+        """
+        fallback_quote = self.FALLBACK_QUOTES.get(theme, self.FALLBACK_QUOTES["motivation"])
+
+        if not self.client:
+            return (
+                "You are capable of amazing things today!",
+                fallback_quote[0],
+                fallback_quote[1]
+            )
+
+        theme_description = self.THEMES.get(theme, self.THEMES["motivation"])
+
+        prompt = f"""Generate a powerful daily affirmation and a related inspirational quote that are {theme_description}.
+
+Format your response EXACTLY like this:
+AFFIRMATION: [one powerful sentence, 15-25 words, present tense, personal, no quotes]
+QUOTE: [an inspirational quote from a famous person]
+AUTHOR: [the person who said the quote]
+
+Example:
+AFFIRMATION: I embrace challenges as opportunities to grow and discover my true potential
+QUOTE: The only impossible journey is the one you never begin
+AUTHOR: Tony Robbins
+
+Generate now:"""
+
+        try:
+            message = await self.client.messages.create(
+                model="claude-3-5-haiku-20241022",
+                max_tokens=150,
+                messages=[{"role": "user", "content": prompt}]
+            )
+
+            response = message.content[0].text.strip()
+
+            # Parse the response
+            affirmation = ""
+            quote = ""
+            author = ""
+
+            for line in response.split('\n'):
+                line = line.strip()
+                if line.startswith('AFFIRMATION:'):
+                    affirmation = line.replace('AFFIRMATION:', '').strip().strip('"').strip("'")
+                elif line.startswith('QUOTE:'):
+                    quote = line.replace('QUOTE:', '').strip().strip('"').strip("'")
+                elif line.startswith('AUTHOR:'):
+                    author = line.replace('AUTHOR:', '').strip()
+
+            # Validate we got all parts
+            if not affirmation or not quote or not author:
+                raise ValueError("Failed to parse AI response")
+
+            return (affirmation, quote, author)
+
+        except Exception as e:
+            self.bot.logger.error(f"Error generating affirmation: {e}")
+            return (
+                "Today is filled with endless possibilities and opportunities for growth.",
+                fallback_quote[0],
+                fallback_quote[1]
+            )
+
+    def get_current_date_for_server(self, timezone_offset: int) -> str:
+        """Get current date string for a server's timezone."""
+        utc_now = datetime.utcnow()
+        server_time = utc_now + timedelta(hours=timezone_offset)
+        return server_time.strftime("%Y-%m-%d")
+
+    def get_current_time_for_server(self, timezone_offset: int) -> time:
+        """Get current time for a server's timezone."""
+        utc_now = datetime.utcnow()
+        server_time = utc_now + timedelta(hours=timezone_offset)
+        return server_time.time()
+
+    @tasks.loop(minutes=15)
+    async def daily_affirmation_task(self) -> None:
+        """Background task that checks every 15 minutes for servers needing affirmations."""
+        try:
+            servers = await self.bot.database.get_servers_needing_affirmations()
+
+            for server_data in servers:
+                server_id, channel_id, post_time_str, tz_offset, theme, last_post_date = server_data
+
+                # Parse the post time
+                target_time = self.parse_time_string(post_time_str)
+                if not target_time:
+                    continue
+
+                # Get current date and time for this server's timezone
+                current_date = self.get_current_date_for_server(tz_offset)
+                current_time = self.get_current_time_for_server(tz_offset)
+
+                # Check if we've already posted today
+                if last_post_date == current_date:
+                    continue
+
+                # Check if it's time to post (within 15-minute window)
+                target_datetime = datetime.combine(datetime.today(), target_time)
+                current_datetime = datetime.combine(datetime.today(), current_time)
+                time_diff = abs((current_datetime - target_datetime).total_seconds() / 60)
+
+                if time_diff <= 15:
+                    # Time to post!
+                    await self.post_affirmation_to_server(
+                        int(server_id), int(channel_id), theme
+                    )
+                    # Update last post date
+                    await self.bot.database.update_last_post_date(
+                        int(server_id), current_date
+                    )
+
+        except Exception as e:
+            self.bot.logger.error(f"Error in daily affirmation task: {e}")
+
+    @daily_affirmation_task.before_loop
+    async def before_daily_affirmation_task(self) -> None:
+        """Wait for bot to be ready before starting task."""
+        await self.bot.wait_until_ready()
+
+    async def post_affirmation_to_server(
+        self, server_id: int, channel_id: int, theme: str
+    ) -> bool:
+        """Post an affirmation to a specific server channel."""
+        try:
+            guild = self.bot.get_guild(server_id)
+            if not guild:
+                self.bot.logger.warning(f"Could not find guild {server_id} for affirmations")
+                return False
+
+            channel = guild.get_channel(channel_id)
+            if not channel:
+                self.bot.logger.warning(
+                    f"Could not find channel {channel_id} in guild {guild.name}"
+                )
+                return False
+
+            # Generate affirmation and quote
+            affirmation_text, quote_text, quote_author = await self.generate_affirmation(theme)
+
+            # Create embed
+            theme_emojis = {
+                "motivation": "💪",
+                "gratitude": "🙏",
+                "confidence": "✨",
+                "mindfulness": "🧘",
+                "success": "🌟",
+                "random": "💫"
+            }
+
+            theme_colors = {
+                "motivation": 0xE74C3C,  # Red
+                "gratitude": 0x2ECC71,   # Green
+                "confidence": 0xF39C12,  # Orange
+                "mindfulness": 0x3498DB, # Blue
+                "success": 0x9B59B6,     # Purple
+                "random": 0xBEBEFE      # Light purple
+            }
+
+            emoji = theme_emojis.get(theme, "💫")
+            color = theme_colors.get(theme, 0xBEBEFE)
+
+            # Build description with affirmation and quote
+            description = f"*{affirmation_text}*\n\n"
+            description += "━━━━━━━━━━━━━━━━━\n\n"
+            description += f"💬 **Related Quote:**\n"
+            description += f"*\"{quote_text}\"*\n"
+            description += f"— {quote_author}"
+
+            embed = discord.Embed(
+                title=f"{emoji} Daily Affirmation",
+                description=description,
+                color=color,
+                timestamp=datetime.utcnow()
+            )
+            embed.set_footer(text=f"Theme: {theme.capitalize()} • Have a wonderful day!")
+
+            await channel.send(embed=embed)
+            self.bot.logger.info(
+                f"Posted daily affirmation to {guild.name} (#{channel.name})"
+            )
+            return True
+
+        except discord.Forbidden:
+            self.bot.logger.warning(
+                f"Missing permissions to post affirmation in channel {channel_id}"
+            )
+            return False
+        except Exception as e:
+            self.bot.logger.error(f"Error posting affirmation: {e}")
+            return False
+
+    @commands.hybrid_command(
+        name="affirmation",
+        description="Get an instant affirmation for yourself",
+    )
+    @app_commands.describe(
+        theme="Choose a theme for your affirmation (optional)"
+    )
+    @app_commands.choices(theme=[
+        app_commands.Choice(name="💪 Motivation", value="motivation"),
+        app_commands.Choice(name="🙏 Gratitude", value="gratitude"),
+        app_commands.Choice(name="✨ Confidence", value="confidence"),
+        app_commands.Choice(name="🧘 Mindfulness", value="mindfulness"),
+        app_commands.Choice(name="🌟 Success", value="success"),
+        app_commands.Choice(name="💫 Random", value="random"),
+    ])
+    async def affirmation(self, ctx: Context, theme: str = "motivation") -> None:
+        """
+        Get an instant affirmation.
+
+        :param ctx: The hybrid command context.
+        :param theme: The theme for the affirmation.
+        """
+        # Defer for slash commands
+        if ctx.interaction:
+            await ctx.defer()
+
+        if not self.client:
+            embed = discord.Embed(
+                title="Error",
+                description="Affirmations are not configured. Please contact the bot owner.",
+                color=0xE02B2B,
+            )
+            await ctx.send(embed=embed)
+            return
+
+        async with ctx.channel.typing():
+            affirmation_text, quote_text, quote_author = await self.generate_affirmation(theme)
+
+            theme_emojis = {
+                "motivation": "💪",
+                "gratitude": "🙏",
+                "confidence": "✨",
+                "mindfulness": "🧘",
+                "success": "🌟",
+                "random": "💫"
+            }
+
+            theme_colors = {
+                "motivation": 0xE74C3C,
+                "gratitude": 0x2ECC71,
+                "confidence": 0xF39C12,
+                "mindfulness": 0x3498DB,
+                "success": 0x9B59B6,
+                "random": 0xBEBEFE
+            }
+
+            emoji = theme_emojis.get(theme, "💫")
+            color = theme_colors.get(theme, 0xBEBEFE)
+
+            # Build description with affirmation and quote
+            description = f"*{affirmation_text}*\n\n"
+            description += "━━━━━━━━━━━━━━━━━\n\n"
+            description += f"💬 **Related Quote:**\n"
+            description += f"*\"{quote_text}\"*\n"
+            description += f"— {quote_author}"
+
+            embed = discord.Embed(
+                title=f"{emoji} Your Affirmation",
+                description=description,
+                color=color,
+                timestamp=datetime.utcnow()
+            )
+            embed.set_footer(text=f"Theme: {theme.capitalize()} • Requested by {ctx.author.display_name}")
+
+            await ctx.send(embed=embed)
+
+    @commands.hybrid_command(
+        name="affirmation-setup",
+        description="Configure daily affirmations for this server (Admin only)",
+    )
+    @app_commands.describe(
+        channel="The channel where affirmations will be posted",
+        time="Time to post (24-hour format, e.g., '09:00' or '14:30')",
+        timezone="Timezone offset from UTC (e.g., -5 for EST, +1 for CET)",
+        theme="Theme for affirmations"
+    )
+    @app_commands.choices(theme=[
+        app_commands.Choice(name="💪 Motivation", value="motivation"),
+        app_commands.Choice(name="🙏 Gratitude", value="gratitude"),
+        app_commands.Choice(name="✨ Confidence", value="confidence"),
+        app_commands.Choice(name="🧘 Mindfulness", value="mindfulness"),
+        app_commands.Choice(name="🌟 Success", value="success"),
+        app_commands.Choice(name="💫 Random", value="random"),
+    ])
+    @commands.has_permissions(administrator=True)
+    async def affirmation_setup(
+        self,
+        ctx: Context,
+        channel: discord.TextChannel,
+        time: str,
+        timezone: int,
+        theme: str = "motivation"
+    ) -> None:
+        """
+        Configure daily affirmations for this server.
+
+        :param ctx: The hybrid command context.
+        :param channel: The channel to post affirmations to.
+        :param time: Time in 24-hour format (HH:MM).
+        :param timezone: Timezone offset from UTC (-12 to +14).
+        :param theme: The theme for affirmations.
+        """
+        # Defer for slash commands
+        if ctx.interaction:
+            await ctx.defer()
+
+        # Validate time format
+        parsed_time = self.parse_time_string(time)
+        if not parsed_time:
+            embed = discord.Embed(
+                title="Invalid Time Format",
+                description="Please use 24-hour format like `09:00` or `14:30`",
+                color=0xE02B2B,
+            )
+            await ctx.send(embed=embed)
+            return
+
+        # Validate timezone
+        if timezone < -12 or timezone > 14:
+            embed = discord.Embed(
+                title="Invalid Timezone",
+                description="Timezone offset must be between -12 and +14",
+                color=0xE02B2B,
+            )
+            await ctx.send(embed=embed)
+            return
+
+        # Validate theme
+        if theme not in self.THEMES:
+            theme = "motivation"
+
+        # Save configuration
+        await self.bot.database.set_affirmation_config(
+            ctx.guild.id, channel.id, time, timezone, theme
+        )
+
+        # Create confirmation embed
+        embed = discord.Embed(
+            title="✅ Daily Affirmations Configured",
+            description=f"Daily affirmations are now set up for this server!",
+            color=0x2ECC71,
+        )
+        embed.add_field(name="📍 Channel", value=channel.mention, inline=True)
+        embed.add_field(name="⏰ Time", value=f"`{time}` (UTC{timezone:+d})", inline=True)
+        embed.add_field(name="🎨 Theme", value=theme.capitalize(), inline=True)
+        embed.add_field(
+            name="Status",
+            value="Enabled - affirmations will start posting tomorrow",
+            inline=False
+        )
+        embed.set_footer(text="Use /affirmation-toggle to enable/disable • /affirmation-now to test")
+
+        await ctx.send(embed=embed)
+        self.bot.logger.info(
+            f"{ctx.author} configured affirmations for {ctx.guild.name}"
+        )
+
+    @commands.hybrid_command(
+        name="affirmation-toggle",
+        description="Enable or disable daily affirmations (Admin only)",
+    )
+    @app_commands.describe(enabled="Enable or disable daily affirmations")
+    @commands.has_permissions(administrator=True)
+    async def affirmation_toggle(self, ctx: Context, enabled: bool) -> None:
+        """
+        Enable or disable daily affirmations.
+
+        :param ctx: The hybrid command context.
+        :param enabled: True to enable, False to disable.
+        """
+        # Defer for slash commands
+        if ctx.interaction:
+            await ctx.defer()
+
+        # Check if config exists
+        config = await self.bot.database.get_affirmation_config(ctx.guild.id)
+        if not config:
+            embed = discord.Embed(
+                title="Not Configured",
+                description="Daily affirmations haven't been set up yet. Use `/affirmation-setup` first.",
+                color=0xE02B2B,
+            )
+            await ctx.send(embed=embed)
+            return
+
+        # Toggle
+        success = await self.bot.database.toggle_affirmations(ctx.guild.id, enabled)
+
+        if success:
+            status = "enabled" if enabled else "disabled"
+            emoji = "✅" if enabled else "❌"
+            color = 0x2ECC71 if enabled else 0xE02B2B
+
+            embed = discord.Embed(
+                title=f"{emoji} Daily Affirmations {status.capitalize()}",
+                description=f"Daily affirmations have been **{status}** for this server.",
+                color=color,
+            )
+            await ctx.send(embed=embed)
+            self.bot.logger.info(
+                f"{ctx.author} {status} affirmations for {ctx.guild.name}"
+            )
+        else:
+            embed = discord.Embed(
+                title="Error",
+                description="Could not update affirmation settings.",
+                color=0xE02B2B,
+            )
+            await ctx.send(embed=embed)
+
+    @commands.hybrid_command(
+        name="affirmation-now",
+        description="Post an affirmation to the configured channel now (Admin only)",
+    )
+    @commands.has_permissions(administrator=True)
+    async def affirmation_now(self, ctx: Context) -> None:
+        """
+        Immediately post an affirmation to the configured channel.
+
+        :param ctx: The hybrid command context.
+        """
+        # Defer for slash commands
+        if ctx.interaction:
+            await ctx.defer()
+
+        # Get config
+        config = await self.bot.database.get_affirmation_config(ctx.guild.id)
+        if not config:
+            embed = discord.Embed(
+                title="Not Configured",
+                description="Daily affirmations haven't been set up yet. Use `/affirmation-setup` first.",
+                color=0xE02B2B,
+            )
+            await ctx.send(embed=embed)
+            return
+
+        if not config["enabled"]:
+            embed = discord.Embed(
+                title="Disabled",
+                description="Daily affirmations are currently disabled. Use `/affirmation-toggle` to enable them.",
+                color=0xE02B2B,
+            )
+            await ctx.send(embed=embed)
+            return
+
+        # Post affirmation
+        success = await self.post_affirmation_to_server(
+            ctx.guild.id, config["channel_id"], config["theme"]
+        )
+
+        if success:
+            embed = discord.Embed(
+                title="✅ Affirmation Posted",
+                description=f"An affirmation has been posted to <#{config['channel_id']}>",
+                color=0x2ECC71,
+            )
+            await ctx.send(embed=embed)
+        else:
+            embed = discord.Embed(
+                title="Error",
+                description="Could not post affirmation. Check bot permissions and channel configuration.",
+                color=0xE02B2B,
+            )
+            await ctx.send(embed=embed)
+
+    @commands.hybrid_command(
+        name="affirmation-status",
+        description="View current affirmation configuration",
+    )
+    async def affirmation_status(self, ctx: Context) -> None:
+        """
+        View the current affirmation configuration for this server.
+
+        :param ctx: The hybrid command context.
+        """
+        # Defer for slash commands
+        if ctx.interaction:
+            await ctx.defer()
+
+        config = await self.bot.database.get_affirmation_config(ctx.guild.id)
+
+        if not config:
+            embed = discord.Embed(
+                title="📊 Affirmation Status",
+                description="Daily affirmations have not been configured for this server yet.\n\nAdmins can use `/affirmation-setup` to get started!",
+                color=0x3498DB,
+            )
+            await ctx.send(embed=embed)
+            return
+
+        status_emoji = "✅" if config["enabled"] else "❌"
+        status_text = "Enabled" if config["enabled"] else "Disabled"
+        color = 0x2ECC71 if config["enabled"] else 0xE02B2B
+
+        embed = discord.Embed(
+            title=f"📊 Daily Affirmation Status",
+            description=f"Configuration for {ctx.guild.name}",
+            color=color,
+        )
+        embed.add_field(
+            name="Status",
+            value=f"{status_emoji} {status_text}",
+            inline=True
+        )
+        embed.add_field(
+            name="Channel",
+            value=f"<#{config['channel_id']}>",
+            inline=True
+        )
+        embed.add_field(
+            name="Theme",
+            value=config["theme"].capitalize(),
+            inline=True
+        )
+        embed.add_field(
+            name="Post Time",
+            value=f"`{config['post_time']}` (UTC{config['timezone_offset']:+d})",
+            inline=True
+        )
+        embed.add_field(
+            name="Last Posted",
+            value=config["last_post_date"] or "Never",
+            inline=True
+        )
+
+        if ctx.author.guild_permissions.administrator:
+            embed.set_footer(text="Use /affirmation-setup to reconfigure • /affirmation-toggle to enable/disable")
+
+        await ctx.send(embed=embed)
+
+
+async def setup(bot) -> None:
+    await bot.add_cog(Affirmations(bot))
