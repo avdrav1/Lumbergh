@@ -265,7 +265,7 @@ Focus on what makes this piece interesting or unique visually and historically."
 
                             # Call Claude vision API
                             message = await self.client.messages.create(
-                                model="claude-3-sonnet-20240229",
+                                model="claude-sonnet-4-5-20250929",
                                 max_tokens=600,
                                 messages=[{
                                     "role": "user",
@@ -518,7 +518,7 @@ Be insightful and educational. Around 300-400 words."""
 
             # Call Claude vision API
             message = await self.client.messages.create(
-                model="claude-3-sonnet-20240229",  # Use Sonnet for better vision analysis
+                model="claude-sonnet-4-5-20250929",  # Use Sonnet for better vision analysis
                 max_tokens=800,
                 messages=[{
                     "role": "user",
@@ -713,7 +713,7 @@ Be thorough and insightful. Around 300-400 words."""
 
             # Call Claude with both images
             message = await self.client.messages.create(
-                model="claude-3-sonnet-20240229",
+                model="claude-sonnet-4-5-20250929",
                 max_tokens=1000,
                 messages=[{
                     "role": "user",
