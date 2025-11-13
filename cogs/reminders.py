@@ -353,7 +353,7 @@ class Reminders(commands.Cog, name="reminders"):
             embed = discord.Embed(
                 title="❌ Invalid Time Format",
                 description="Please use a valid time format:\n• `5s` - 5 seconds\n• `10m` - 10 minutes\n• `2h` - 2 hours\n• `1d` - 1 day\n• `1w` - 1 week",
-                color=0xe74c3c
+                color=0xE02B2B
             )
             await context.send(embed=embed)
             return
@@ -365,7 +365,7 @@ class Reminders(commands.Cog, name="reminders"):
             embed = discord.Embed(
                 title="❌ Time Too Short",
                 description=f"Please set a reminder for at least {min_time} seconds.",
-                color=0xe74c3c
+                color=0xE02B2B
             )
             await context.send(embed=embed)
             return
@@ -375,7 +375,7 @@ class Reminders(commands.Cog, name="reminders"):
             embed = discord.Embed(
                 title="❌ Time Too Long",
                 description="Please set a reminder for less than 1 year.",
-                color=0xe74c3c
+                color=0xE02B2B
             )
             await context.send(embed=embed)
             return
@@ -384,7 +384,7 @@ class Reminders(commands.Cog, name="reminders"):
             embed = discord.Embed(
                 title="❌ Message Too Long",
                 description="Please keep your reminder message under 500 characters.",
-                color=0xe74c3c
+                color=0xE02B2B
             )
             await context.send(embed=embed)
             return
@@ -398,7 +398,7 @@ class Reminders(commands.Cog, name="reminders"):
             embed = discord.Embed(
                 title="❌ Too Many Reminders",
                 description="You can only have 5 active reminders at a time (including recurring ones).",
-                color=0xe74c3c
+                color=0xE02B2B
             )
             await context.send(embed=embed)
             return
@@ -422,6 +422,7 @@ class Reminders(commands.Cog, name="reminders"):
         reminder_data = {
             'task': task,
             'user_id': user_id,
+            'channel_id': channel_id,
             'message': message,
             'time': formatted_time,
             'recurring': False,
@@ -445,7 +446,7 @@ class Reminders(commands.Cog, name="reminders"):
             embed = discord.Embed(
                 title="❌ Invalid Time Format",
                 description="Please use a valid time format:\n• `5s` - 5 seconds\n• `10m` - 10 minutes\n• `2h` - 2 hours\n• `1d` - 1 day\n• `1w` - 1 week",
-                color=0xe74c3c
+                color=0xE02B2B
             )
             await context.send(embed=embed)
             return
@@ -457,7 +458,7 @@ class Reminders(commands.Cog, name="reminders"):
             embed = discord.Embed(
                 title="❌ Time Too Short",
                 description="Recurring reminders need at least 1 minute.",
-                color=0xe74c3c
+                color=0xE02B2B
             )
             await context.send(embed=embed)
             return
@@ -467,7 +468,7 @@ class Reminders(commands.Cog, name="reminders"):
             embed = discord.Embed(
                 title="❌ Time Too Long",
                 description="Please set a recurring reminder for less than 1 day.",
-                color=0xe74c3c
+                color=0xE02B2B
             )
             await context.send(embed=embed)
             return
@@ -476,7 +477,7 @@ class Reminders(commands.Cog, name="reminders"):
             embed = discord.Embed(
                 title="❌ Message Too Long",
                 description="Please keep your reminder message under 500 characters.",
-                color=0xe74c3c
+                color=0xE02B2B
             )
             await context.send(embed=embed)
             return
@@ -490,7 +491,7 @@ class Reminders(commands.Cog, name="reminders"):
             embed = discord.Embed(
                 title="❌ Too Many Reminders",
                 description="You can only have 5 active reminders at a time (including recurring ones).",
-                color=0xe74c3c
+                color=0xE02B2B
             )
             await context.send(embed=embed)
             return
@@ -500,7 +501,7 @@ class Reminders(commands.Cog, name="reminders"):
             embed = discord.Embed(
                 title="❌ Too Many Recurring Reminders",
                 description="You can only have 3 active recurring reminders at a time.",
-                color=0xe74c3c
+                color=0xE02B2B
             )
             await context.send(embed=embed)
             return
@@ -525,6 +526,7 @@ class Reminders(commands.Cog, name="reminders"):
         reminder_data = {
             'task': task,
             'user_id': user_id,
+            'channel_id': channel_id,
             'message': message,
             'time': formatted_time,
             'recurring': True,
@@ -549,7 +551,7 @@ class Reminders(commands.Cog, name="reminders"):
             embed = discord.Embed(
                 title="❌ Invalid Schedule Pattern",
                 description="Please use a valid schedule pattern:\n• `daily` - Every day\n• `weekdays` - Monday through Friday\n• `weekends` - Saturday and Sunday\n• `monday`, `tuesday`, etc. - Specific weekday\n• `monthly` - First day of each month",
-                color=0xe74c3c
+                color=0xE02B2B
             )
             await context.send(embed=embed)
             return
@@ -559,7 +561,7 @@ class Reminders(commands.Cog, name="reminders"):
             embed = discord.Embed(
                 title="❌ Invalid Time Format",
                 description="Please use a valid time format:\n• `9:00 AM` or `9am`\n• `2:30 PM` or `2:30pm`\n• `14:30` (24-hour format)\n• `09:00` (24-hour format)",
-                color=0xe74c3c
+                color=0xE02B2B
             )
             await context.send(embed=embed)
             return
@@ -570,7 +572,7 @@ class Reminders(commands.Cog, name="reminders"):
             embed = discord.Embed(
                 title="❌ Message Too Long",
                 description="Please keep your reminder message under 500 characters.",
-                color=0xe74c3c
+                color=0xE02B2B
             )
             await context.send(embed=embed)
             return
@@ -583,7 +585,7 @@ class Reminders(commands.Cog, name="reminders"):
             embed = discord.Embed(
                 title="❌ Too Many Reminders",
                 description="You can only have 5 active reminders at a time (including scheduled ones).",
-                color=0xe74c3c
+                color=0xE02B2B
             )
             await context.send(embed=embed)
             return
@@ -593,7 +595,7 @@ class Reminders(commands.Cog, name="reminders"):
             embed = discord.Embed(
                 title="❌ Error Calculating Schedule",
                 description="Could not calculate the next occurrence for this schedule.",
-                color=0xe74c3c
+                color=0xE02B2B
             )
             await context.send(embed=embed)
             return
@@ -635,6 +637,7 @@ class Reminders(commands.Cog, name="reminders"):
         reminder_data = {
             'task': task,
             'user_id': user_id,
+            'channel_id': channel_id,
             'message': message,
             'schedule_pattern': schedule_pattern,
             'target_time': target_time,
@@ -661,7 +664,7 @@ class Reminders(commands.Cog, name="reminders"):
                 embed = discord.Embed(
                     title="❌ Missing Message",
                     description="Please provide part of the reminder message to stop.\n\nUsage: `/remind-manage stop <message part>`",
-                    color=0xe74c3c
+                    color=0xE02B2B
                 )
                 await context.send(embed=embed)
                 return
@@ -680,7 +683,7 @@ class Reminders(commands.Cog, name="reminders"):
             embed = discord.Embed(
                 title="❌ Invalid Action",
                 description="Please use a valid action:\n• `list` - List all your reminders\n• `stop <message>` - Stop specific reminder\n• `stop-recurring` - Stop all recurring reminders\n• `stop-scheduled` - Stop all scheduled reminders\n• `stats` - Show system statistics\n• `test` - Test reminder (10 seconds)\n• `help` - Show detailed help",
-                color=0xe74c3c
+                color=0xE02B2B
             )
             await context.send(embed=embed)
 
@@ -760,7 +763,7 @@ class Reminders(commands.Cog, name="reminders"):
             embed = discord.Embed(
                 title="❌ No Matching Reminders",
                 description=f"No active reminders found containing: *{message_part}*",
-                color=0xe74c3c
+                color=0xE02B2B
             )
             await context.send(embed=embed)
             return
@@ -867,7 +870,7 @@ class Reminders(commands.Cog, name="reminders"):
             embed = discord.Embed(
                 title="❌ Permission Denied",
                 description="Only the bot owner can use the test command.",
-                color=0xe74c3c
+                color=0xE02B2B
             )
             await context.send(embed=embed)
             return
@@ -935,7 +938,7 @@ class Reminders(commands.Cog, name="reminders"):
             embed = discord.Embed(
                 title="❌ Missing Arguments",
                 description="Usage: `/remind <time> <message>`\n\nExample: `/remind 5m Take a break`",
-                color=0xe74c3c
+                color=0xE02B2B
             )
             await context.send(embed=embed)
 

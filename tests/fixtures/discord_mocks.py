@@ -79,5 +79,24 @@ def assert_error_embed_sent(mock_ctx):
     assert mock_ctx.send.called
     call_args = mock_ctx.send.call_args
     embed = call_args[1]['embed']
-    assert embed.color == 0xE02B2B, f"Expected error color 0xE02B2B, got {embed.color}"
+    # Handle both integer and hex string color formats
+    expected_color = 0xE02B2B
+    actual_color = embed.color
+
+    # Normalize to integer for comparison
+    if isinstance(actual_color, str):
+        # Handle strings like "#e02b2b" or "e02b2b"
+        actual_color = int(actual_color.lstrip('#'), 16)
+    elif isinstance(actual_color, int):
+        # Already an integer
+        pass
+    else:
+        # Try to convert to int
+        try:
+            actual_color = int(actual_color)
+        except (ValueError, TypeError):
+            pass
+
+    # Compare as integers (case-insensitive for hex)
+    assert actual_color == expected_color, f"Expected error color {expected_color:#x}, got {embed.color}"
     return embed
