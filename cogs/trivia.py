@@ -27,8 +27,8 @@ from helpers.claude_cog import ClaudeAICog
 class TriviaView(discord.ui.View):
     """Interactive button view for trivia questions."""
 
-    def __init__(self, correct_answer: str, cog, server_id: int, category: str, difficulty: str, question: str, explanation: str):
-        super().__init__(timeout=30)
+    def __init__(self, correct_answer: str, cog, server_id: int, category: str, difficulty: str, question: str, explanation: str, timeout: Optional[float] = None):
+        super().__init__(timeout=timeout)
         self.correct_answer = correct_answer
         self.cog = cog
         self.server_id = server_id
@@ -288,7 +288,7 @@ Rules:
             }
             return fallback_formatted
 
-    async def create_question_embed(self, question_data: Dict) -> discord.Embed:
+    async def create_question_embed(self, question_data: Dict, has_time_limit: bool = False) -> discord.Embed:
         """Create an embed for a trivia question."""
         category = question_data["category"]
         difficulty = question_data["difficulty"]
@@ -316,7 +316,11 @@ Rules:
                 inline=False
             )
 
-        embed.set_footer(text="⏱️ You have 30 seconds to answer")
+        # Set footer based on time limit
+        if has_time_limit:
+            embed.set_footer(text="⏱️ You have 30 seconds to answer")
+        else:
+            embed.set_footer(text="Answer whenever you're ready - no time limit!")
 
         return embed
 
@@ -426,14 +430,16 @@ Rules:
     )
     @app_commands.describe(
         category="The category for the question",
-        difficulty="The difficulty level"
+        difficulty="The difficulty level",
+        time_limit="Enable 30-second time limit (default: no limit)"
     )
     @commands.cooldown(1, 3, commands.BucketType.user)
     async def trivia(
         self,
         context: Context,
         category: Optional[str] = "random",
-        difficulty: Optional[str] = "medium"
+        difficulty: Optional[str] = "medium",
+        time_limit: Optional[bool] = False
     ) -> None:
         """
         Start a single trivia question.
@@ -460,10 +466,11 @@ Rules:
             await context.send(embed=embed)
             return
 
-        # Create embed
-        embed = await self.create_question_embed(question_data)
+        # Create embed with time limit info
+        embed = await self.create_question_embed(question_data, has_time_limit=time_limit)
 
         # Create view with buttons
+        timeout_value = 30.0 if time_limit else None
         view = TriviaView(
             question_data["correct"],
             self,
@@ -471,7 +478,8 @@ Rules:
             question_data["category"],
             question_data["difficulty"],
             question_data["question"],
-            question_data["explanation"]
+            question_data["explanation"],
+            timeout=timeout_value
         )
 
         # Send message
