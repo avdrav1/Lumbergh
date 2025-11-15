@@ -49,6 +49,21 @@ DEFAULT_SOURCES = {
 }
 
 
+class NewsThreadView(discord.ui.View):
+    """Button view for accessing news thread."""
+
+    def __init__(self, thread_url: str):
+        super().__init__(timeout=None)  # Persistent button
+
+        # Add button that links to thread
+        button = discord.ui.Button(
+            label="📰 Read All Articles",
+            style=discord.ButtonStyle.primary,
+            url=thread_url
+        )
+        self.add_item(button)
+
+
 class News(ClaudeAICog, name="news"):
     def __init__(self, bot) -> None:
         super().__init__(bot, cog_name="News cog")
@@ -448,10 +463,10 @@ class News(ClaudeAICog, name="news"):
 
     def _create_digest_embeds(self, articles: list) -> list:
         """
-        Create digest embeds grouped by category.
+        Create consolidated digest embed with numbered headlines.
 
         :param articles: List of articles with 'category' and 'summary' fields.
-        :return: List of Discord embeds.
+        :return: List of Discord embeds (usually just one, unless >4000 chars).
         """
         # Group articles by category
         categories = {}
@@ -475,32 +490,42 @@ class News(ClaudeAICog, name="news"):
             'Other': '📰'
         }
 
-        # Create embeds (one per category, max 25 fields per embed)
-        embeds = []
+        # Build consolidated digest
+        digest_description = ""
+        article_number = 1
 
         for category, cat_articles in sorted(categories.items()):
             emoji = category_emojis.get(category, '📰')
-            embed = discord.Embed(
-                title=f"{emoji} {category}",
-                description=f"{len(cat_articles)} article{'s' if len(cat_articles) != 1 else ''}",
-                color=0x3498DB,
-            )
+            digest_description += f"\n{emoji} **{category}**\n"
 
-            # Add up to 25 articles (Discord limit)
-            for article in cat_articles[:25]:
-                field_value = f"**{article['source']}** • {article.get('summary', article['description'][:100])}"
-                embed.add_field(
-                    name=f"{article.get('article_type', '📰')} {article['title'][:80]}",
-                    value=field_value[:1024],  # Discord field value limit
-                    inline=False
-                )
+            for article in cat_articles:
+                # Format: Number. Title | Source
+                # Summary on next line
+                title = article['title'][:80]  # Limit title length
+                source = article['source']
+                summary = article.get('summary', article['description'])[:100]  # Limit summary
 
-            if len(cat_articles) > 25:
-                embed.set_footer(text=f"+ {len(cat_articles) - 25} more articles in this category")
+                digest_description += f"{article_number}. **{title}** | {source}\n"
+                digest_description += f"   {summary}...\n\n"
 
-            embeds.append(embed)
+                # Store article number for later use
+                article['number'] = article_number
+                article_number += 1
 
-        return embeds
+        # Create embed
+        embed = discord.Embed(
+            title="📋 Today's Headlines",
+            description=digest_description.strip(),
+            color=0x3498DB,
+        )
+        embed.set_footer(text="💬 Full articles with images & links in thread - use numbers to navigate!")
+
+        # Check if description exceeds Discord's 4096 char limit
+        # If so, we'd need to split into multiple embeds (future enhancement)
+        if len(digest_description) > 4000:
+            self.bot.logger.warning(f"Digest description is {len(digest_description)} chars - may be truncated")
+
+        return [embed]
 
     async def post_news_to_server(
         self, server_id: int, channel_id: int
@@ -553,10 +578,19 @@ class News(ClaudeAICog, name="news"):
             # Count categories
             categories = set(article.get('category', 'Other') for article in all_articles)
 
+            # Create preview of top headlines
+            preview_headlines = []
+            for i, article in enumerate(all_articles[:3]):  # Top 3 headlines
+                preview_headlines.append(article['title'][:60])
+
+            preview_text = ", ".join(preview_headlines)
+            if len(all_articles) > 3:
+                preview_text += "..."
+
             # Send header embed
             header_embed = discord.Embed(
                 title="📰 Daily News Digest",
-                description=f"{len(categories)} categories • {len(all_articles)} articles from {len(sources)} sources",
+                description=f"{len(categories)} categories • {len(all_articles)} articles from {len(sources)} sources\n\n**Top stories:** {preview_text}",
                 color=0x3498DB,
             )
             header_embed.set_footer(text=f"News Update • {datetime.now().strftime('%B %d, %Y')}")
@@ -583,8 +617,11 @@ class News(ClaudeAICog, name="news"):
 
             # Post each individual article with AI summary to the thread
             for article in all_articles:
+                # Use the number assigned during digest creation
+                article_number = article.get('number', '?')
+
                 embed = discord.Embed(
-                    title=article["title"][:256],  # Discord limit
+                    title=f"{article_number}. {article['title'][:250]}",  # Discord limit, include number
                     description=article.get("summary", article["description"]),
                     color=0x3498DB,
                     url=article["link"],
@@ -616,6 +653,11 @@ class News(ClaudeAICog, name="news"):
 
                 # Mark article as posted
                 await self.bot.database.mark_article_posted(server_id, article["id"])
+
+            # Add button to header message after thread is created
+            thread_url = thread.jump_url
+            view = NewsThreadView(thread_url)
+            await header_embed_message.edit(view=view)
 
             self.bot.logger.info(
                 f"Posted {len(all_articles)} news articles to server {server_id}"
